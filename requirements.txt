@@ -1,5 +1,6 @@
-telethon
-gspread
-oauth2client
-apscheduler
-python-dotenv
+telethon==1.40.0
+gspread==6.2.1
+oauth2client==4.1.3
+python-dotenv==1.1.1
+requests==2.32.4
+pytz==2025.1
