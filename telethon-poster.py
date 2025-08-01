@@ -1,36 +1,84 @@
-# poster.py
-# Telegram multi-account poster from Google Sheets
-# -----------------------------------------------
-# • трём аккаунтам нужны переменные:
-#   TG{N}_API_ID, TG{N}_API_HASH, TG{N}_SESSION, TG{N}_CHANNEL
-#   один общий GSHEET_ID (ID таблицы)
-# • общий сервис-аккаунт Sheets → GOOGLE_CREDS_JSON (base-64 от creds.json)
-# • рассчитывает время по Asia/Yerevan, постит альбом до 4 медиа,
-#   собирает текст по шаблону с платными эмодзи
-
-import os, json, base64, asyncio
-from dotenv import load_dotenv      # ← добавили
-load_dotenv()      
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
-from telethon import TelegramClient
-from telethon.sessions import StringSession
-from telethon.tl.types import (
-    MessageEntityCustomEmoji,
-    InputMediaPhotoExternal,
-)
+import os
+import asyncio
+import base64
+import json
+from datetime import datetime
+import pytz
+import requests
+import io
 
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.date import DateTrigger
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from dotenv import load_dotenv
+load_dotenv()  # automatically pull variables from a .env file into os.environ
 
-# ────────────────────────────────────────────────────────────────────────────
-# Константы
-TZ = ZoneInfo("Asia/Yerevan")
+# Load configuration from environment variables
+GSHEET_ID = os.environ.get("GSHEET_ID")
+GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON")
+TG1_API_ID = int(os.environ.get("TG1_API_ID", 0))
+TG1_API_HASH = os.environ.get("TG1_API_HASH")
+TG1_SESSION = os.environ.get("TG1_SESSION")  # may be None or empty if not provided
+TG1_CHANNEL = os.environ.get("TG1_CHANNEL")  # channel IDs as strings (including the '-' for channels)
+TG2_API_ID = int(os.environ.get("TG2_API_ID", 0))
+TG2_API_HASH = os.environ.get("TG2_API_HASH")
+TG2_SESSION = os.environ.get("TG2_SESSION")
+TG2_CHANNEL = os.environ.get("TG2_CHANNEL")
+TG3_API_ID = int(os.environ.get("TG3_API_ID", 0))
+TG3_API_HASH = os.environ.get("TG3_API_HASH")
+TG3_SESSION = os.environ.get("TG3_SESSION")
+TG3_CHANNEL = os.environ.get("TG3_CHANNEL")
+REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
 
-EMOJI = {   # ID кастом-эмодзи
+# Parse Google service account credentials from the base64 JSON string
+credentials_json = json.loads(base64.b64decode(GOOGLE_CREDS_JSON)) if GOOGLE_CREDS_JSON else None
+
+# Authorize gspread and open the sheet
+gc = gspread.service_account_from_dict(credentials_json)  # use creds dict [oai_citation:12‡stackoverflow.com](https://stackoverflow.com/questions/71869394/python-make-gspread-service-account-take-a-python-dictionary-or-string-instead#:~:text=import%20gspread) [oai_citation:13‡stackoverflow.com](https://stackoverflow.com/questions/71869394/python-make-gspread-service-account-take-a-python-dictionary-or-string-instead#:~:text=gc%20%3D%20gspread)
+sheet = gc.open_by_key(GSHEET_ID)
+worksheet = sheet.sheet1  # assuming data is in the first sheet
+
+# Timezone for parsing schedule times (Armenia)
+tz = pytz.timezone("Asia/Yerevan")
+
+# Telegram clients setup for three accounts
+client1 = TelegramClient(StringSession(TG1_SESSION) if TG1_SESSION else 'tg1_session', TG1_API_ID, TG1_API_HASH)
+client2 = TelegramClient(StringSession(TG2_SESSION) if TG2_SESSION else 'tg2_session', TG2_API_ID, TG2_API_HASH)
+client3 = TelegramClient(StringSession(TG3_SESSION) if TG3_SESSION else 'tg3_session', TG3_API_ID, TG3_API_HASH)
+
+# ---------------------------------------------------------------------------
+# Custom HTML parser to convert <a href="emoji/{id}">X</a> into MessageEntityCustomEmoji
+from telethon.extensions import html as tl_html
+from telethon import types
+
+class CustomHtml:
+    @staticmethod
+    def parse(text):
+        text, entities = tl_html.parse(text)
+        for i, e in enumerate(entities):
+            if isinstance(e, types.MessageEntityTextUrl) and e.url.startswith("emoji/"):
+                emoji_id = int(e.url.split("/", 1)[1])
+                entities[i] = types.MessageEntityCustomEmoji(
+                    e.offset, e.length, document_id=emoji_id
+                )
+        return text, entities
+
+    @staticmethod
+    def unparse(text, entities):
+        # Needed if you ever download messages and turn entities back into HTML
+        for i, e in enumerate(entities or []):
+            if isinstance(e, types.MessageEntityCustomEmoji):
+                entities[i] = types.MessageEntityTextUrl(
+                    e.offset, e.length, url=f"emoji/{e.document_id}"
+                )
+        return tl_html.unparse(text, entities)
+
+# Set the custom HTML parser as the parse_mode for all three Telegram clients
+for _c in (client1, client2, client3):
+    _c.parse_mode = CustomHtml()
+
+# Custom emoji IDs as given
+emoji_ids = {
     1: 5429293125518510398,
     2: 5814534640949530526,
     3: 5370853949358218655,
@@ -39,230 +87,217 @@ EMOJI = {   # ID кастом-эмодзи
     6: 5373338978780979795,
     7: 5372991528811635071,
     8: 5364098734600762220,
-    9: 5460811944883660881,
+    9: 5460811944883660881
 }
-ZWSP = "\u2060"  # zero-width space, чтобы привязать entities
-
-# соответствие "нормализованное имя" → "заголовок в Google Sheets"
-FIELD_MAP = {
-    "time_iso":       "Время",
-    "status":         "Статус",
-    "name":           "Имя",
-    "skip":           "Пробелы перед короной",
-    "services":       "Услуги",
-    "extra_services": "Доп. услуги",
-    "age":            "Возраст",
-    "height":         "Рост",
-    "weight":         "Вес",
-    "bust":           "Грудь",
-    "express":        "Express",
-    "incall":         "Incall",
-    "outcall":        "Outcall",
-    "media1":         "Фото 1",
-    "media2":         "Фото 2",
-    "media3":         "Фото 3",
-    "media4":         "Фото 4",
-    "whatsapp":       "WhatsApp",
-    "sent":           "Отправлено",
+# Placeholder symbols for each emoji (using generic or related Unicode emoji)
+emoji_placeholders = {
+    1: "☁️",  # crown (assumed for status)
+    2: "👑",  # star or any symbol for second line
+    3: "✅",  # camera for photo (example)
+    4: "✅",
+    5: "✅",
+    6: "✅",
+    7: "✅",
+    8: "⚡️",  # fire or any highlight emoji for call-to-action
+    9: "😜",  # playful face for contact link
 }
 
-def canon(row: dict) -> dict:
-    """Преобразует raw‑строку из Sheets в унифицированный dict."""
-    return {k: row.get(v, "").strip() if isinstance(row.get(v), str) else row.get(v)
-            for k, v in FIELD_MAP.items()}
-
-# ────────────────────────────────────────────────────────────────────────────
-# Google Sheets авторизация
-gc_creds = json.loads(base64.b64decode(os.environ["GOOGLE_CREDS_JSON"]))
-gc = gspread.authorize(
-    ServiceAccountCredentials.from_json_keyfile_dict(
-        gc_creds,
-        ["https://spreadsheets.google.com/feeds",
-         "https://www.googleapis.com/auth/drive"],
+async def send_post(record, row_idx):
+    """Send a post to all three channels based on the data in record (a dict)."""
+    status = record["Статус"]  # e.g., "Привет"
+    name = record["Имя"]
+    services = record["Услуги"]
+    extra_services = record["Доп. услуги"]
+    age = record["Возраст"]
+    height = record["Рост"]
+    weight = record["Вес"]
+    bust = record["Грудь"]
+    express_price = record["Express"]
+    incall_price = record["Incall"]
+    outcall_price = record["Outcall"]
+    whatsapp_link = record["WhatsApp"]
+    # Text that must appear *before* the crown sign on its own line
+    skip_text = record.get("Пробелы перед короной", "")
+    # ────────── compose parameter/price blocks ──────────
+    params_block = (
+        f"Возраст - {age}\n"
+        f"Рост - {height}\n"
+        f"Вес - {weight}\n"
+        f"Грудь - {bust}"
     )
-)
 
-# ────────────────────────────────────────────────────────────────────────────
-# Читаем единый ID таблицы
-SHEET_ID = os.getenv("GSHEET_ID")
-if not SHEET_ID:
-    raise SystemExit("⛔  Переменная GSHEET_ID не задана.")
+    price_block = (
+        f"Express - {express_price} AMD\n"
+        f"Incall - {incall_price} AMD\n"
+        f"Outcall -{outcall_price} AMD"
+    )
+    # Build the message HTML string following the desired layout
+    message_html_lines = []
 
-# Собираем все аккаунты из переменных окружения
-ACCOUNTS = []
-for n in (1, 2, 3):
-    api_id   = os.getenv(f"TG{n}_API_ID")
-    api_hash = os.getenv(f"TG{n}_API_HASH")
-    session  = os.getenv(f"TG{n}_SESSION")
-    channel  = os.getenv(f"TG{n}_CHANNEL")
-    if not all((api_id, api_hash, session, channel)):
-        continue
+    # Optional blank lines before the first line
+    if skip_text and skip_text.strip() != "":
+        message_html_lines.append(skip_text)
 
-    cli = TelegramClient(StringSession(session), int(api_id), api_hash)
-    sheet = gc.open_by_key(SHEET_ID).sheet1  # первый таб
-    ACCOUNTS.append({"client": cli, "channel": channel, "sheet": sheet})
+    # ☁️  *status*  ☁️
+    message_html_lines.append(
+        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> '
+        f'<i>{status}</i> '
+        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
+        
+    )
+    # Add a blank line after the status
+    message_html_lines.append("")
 
-# ────────────────────────────────────────────────────────────────────────────
-def build_post(row: dict):
-    """Возвращает (text, entities) согласно заданному шаблону."""
-    entities, parts = [], []
+    # line with prefix‑text from column U + crown
+    message_html_lines.append(
+        f'{skip_text}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
+    )
 
-    def add_emoji(num: int) -> str:
-        offset = sum(len(p) for p in parts)
-        entities.append(
-            MessageEntityCustomEmoji(offset=offset, length=1, document_id=EMOJI[num])
-        )
-        return ZWSP
+    # Bold + italic name
+    message_html_lines.append(f'<b><i>{name}</i></b>')
 
-    # шапка
-    parts += [add_emoji(1), f" {row['status']} ", add_emoji(1), "\n"]
-    parts += [f"{row['skip']}{add_emoji(2)}\n"]
-    parts += [f"{row['name']}\n\n"]
+    # Bold “Фото …” line with five check‑mark emojis
+    foto_checks = "".join(
+        f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>'
+        for i in range(3, 8)
+    )   
+    
+    # --- после строки «Фото …»
+    message_html_lines.append("")
+    message_html_lines.append(f'<b>Фото {foto_checks}</b>')
+    message_html_lines.append("")          # ← пропуск
 
-    # фото
-    parts += ["Фото "]
-    for num in (3, 4, 5, 6, 7):
-        parts += [add_emoji(num), " "]
-    parts += ["\n\n"]
+    # --- блок «Услуги»
+    message_html_lines.append("Услуги:")
+    message_html_lines.append(f'<b><i>{services}</i></b>')
+    message_html_lines.append("")          # ← пропуск
 
-    # услуги
-    parts += ["Услуги:\n", f"{row['services']}\n", "Доп. услуги:\n",
-              f"{row['extra_services']}\n\n"]
+    # --- блок «Доп. услуги»
+    message_html_lines.append("Доп. услуги:")
+    message_html_lines.append(f'<b><i>{extra_services}</i></b>')
+    message_html_lines.append("")          # ← пропуск
 
-    # параметры
-    parts += ["Параметры:\n",
-              f"Возраст – {row['age']}\n",
-              f"Рост   – {row['height']}\n",
-              f"Вес    – {row['weight']}\n",
-              f"Грудь  – {row['bust']}\n\n"]
+    # --- блок «Параметры»
+    message_html_lines.append("Параметры:")
+    message_html_lines.append(f'<b><i>{params_block}</i></b>')
+    message_html_lines.append("")          # ← пропуск
 
-    # цены
-    parts += ["Цена:\n",
-              f"Express – {row['express']}\n",
-              f"Incall  – {row['incall']}\n",
-              f"Outcall – {row['outcall']}\n\n"]
+    # --- блок «Цена»
+    message_html_lines.append("Цена:")
+    message_html_lines.append(f'<b><i>{price_block}</i></b>')
+    message_html_lines.append("")          # ← пропуск
 
-    # CTA
-    parts += [add_emoji(8), " Назначь встречу уже сегодня! ", add_emoji(8), "\n"]
-    parts += [f'<a href="{row["whatsapp"]}">Связь в WhatsApp</a> ', add_emoji(9)]
+    # Call‑to‑action line with ⚡️ emojis (id 8)
+    message_html_lines.append(
+        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a> '
+        f'<b><i>Назначь встречу уже сегодня!</i></b> '
+        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>'
+    )
 
-    return "".join(parts), entities
+    # Contact line with 😌 (id 9)
+    message_html_lines.append(
+        f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a> '
+        f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>'
+    )
 
-# ────────────────────────────────────────────────────────────────────────────
-def record_from_sheet(row_raw: list[str]) -> dict:
-    """Преобразование строки, **используется ТОЛЬКО когда в Google‑таблице нет шапки**.
-    В вашем текущем листе заголовки есть, поэтому этот путь не задействуется."""
-    return {
-        "time_iso":       row_raw[1],
-        "status":         row_raw[2],
-        "name":           row_raw[3],
-        "services":       row_raw[5],
-        "extra_services": row_raw[6],
-        "age":            row_raw[7],
-        "height":         row_raw[8],
-        "weight":         row_raw[9],
-        "bust":           row_raw[10],
-        "express":        row_raw[11],
-        "incall":         row_raw[12],
-        "outcall":        row_raw[13],
-        "media1":         row_raw[16],
-        "media2":         row_raw[17],
-        "media3":         row_raw[18],
-        "media4":         row_raw[19],
-        "skip":           row_raw[20],
-        "whatsapp":       row_raw[21],
-    }
+    # Join all parts with newline separator
+    message_html = "\n".join(message_html_lines)
 
-# ────────────────────────────────────────────────────────────────────────────
-scheduler = AsyncIOScheduler(timezone=TZ)
-# Интервал авто‑опроса таблицы (секунды). 0 = опрос выключен.
-REFRESH_SEC = int(os.getenv("REFRESH_SECONDS", "0"))
+    # Gather media files
+    file_count = 0
+    if "Фото в посте" in record:
+        # This column might be an int or string number indicating how many photos to attach
+        val = record["Фото в посте"]
+        if isinstance(val, int):
+            file_count = val
+        elif isinstance(val, str) and val.isdigit():
+            file_count = int(val)
+    # Get the photo URLs from Q, R, S, T (we have them in record if get_all_records is used, likely as keys or we use indices)
+    # The CSV header shows Photo URLs under keys 'Фото 1', 'Фото 2', etc., we need to match correctly.
+    photo_keys = [k for k in record.keys() if k.startswith("Фото ") or k.startswith("Photo")]
+    # Sort the keys to ensure order (Фото 1, Фото 2, ...)
+    photo_keys.sort()
+    photo_urls = []
+    for pk in photo_keys:
+        url = record[pk]
+        if url and isinstance(url, str) and url.startswith("http"):
+            photo_urls.append(url)
+    # Download photos into raw-byte tuples so each Telegram client gets its own BytesIO copy
+    photo_data = []  # list of (bytes, file_name)
+    if file_count > 0 and photo_urls:
+        for url in photo_urls[:file_count]:
+            try:
+                resp = requests.get(url)
+                resp.raise_for_status()
+                file_data = resp.content
+                file_name = url.split("/")[-1] or "image.jpg"
+                photo_data.append((file_data, file_name))
+            except Exception as e:
+                print(f"Warning: failed to download image {url} - {e}")
+    # Send message (with media if available) via all three clients concurrently
+    tasks = []
+    # Determine target channels (convert to int if needed)
+    channels = [TG1_CHANNEL, TG2_CHANNEL, TG3_CHANNEL]
+    # Convert channel IDs to int for Telethon if they look like integers
+    channels = [int(ch) if ch and ch.isdigit() or (ch and ch.startswith("-")) else ch for ch in channels]
+    # Prepare send tasks
+    for client, channel in zip([client1, client2, client3], channels):
+        if photo_data:
+            # Re‑instantiate fresh BytesIO objects so each client gets independent streams
+            file_objs = []
+            for data, fname in photo_data:
+                bio = io.BytesIO(data)
+                bio.name = fname
+                file_objs.append(bio)
+            tasks.append(client.send_file(channel, file_objs, caption=message_html))
+        else:
+            tasks.append(client.send_message(channel, message_html))
+    # Run all send tasks concurrently
+    await asyncio.gather(*tasks)
+    # Update the Google Sheet to mark as sent (column A to TRUE)
+    worksheet.update_cell(row_idx, 1, "TRUE")  # row_idx is actual sheet row index (1-based). Column 1 = A.
+    print(f"Posted and marked row {row_idx} as sent.")
 
-def schedule_for_acc(acc: dict):
-    """Ставит задачи из Google Sheet для конкретного аккаунта."""
-    sheet = acc["sheet"]
-
-    try:
-        rows = sheet.get_all_records()          # если есть заголовки
-        use_headers = True
-    except gspread.exceptions.APIError:
-        use_headers = False
-
-    if use_headers:
-        records = rows
-    else:
-        records = [record_from_sheet(sheet.row_values(i))
-                   for i in range(2, sheet.row_count + 1)]
-
-    now = datetime.now(TZ)
-    for raw in records:
-        r = canon(raw)
-
-        # пропускаем уже отправленные или без времени
-        if str(r.get("sent")).lower() in ("true", "yes", "1"):
-            continue
-        try:
-            run_dt = datetime.fromisoformat(r["time_iso"]).replace(tzinfo=TZ)
-        except (TypeError, ValueError):
-            continue
-        if run_dt < now:
-            continue
-
-        scheduler.add_job(
-            send_post,
-            trigger=DateTrigger(run_date=run_dt),
-            args=[acc, r],
-            name=f"{acc['channel']}_{run_dt.isoformat()}",
-        )
-
-async def send_post(acc: dict, row: dict):
-    client, channel = acc["client"], acc["channel"]
-    text, entities = build_post(row)
-
-    media_urls = [row.get(k) for k in ("media1", "media2", "media3", "media4") if row.get(k)]
-    if media_urls:
-        album = [InputMediaPhotoExternal(u) for u in media_urls]
-        await client.send_file(
-            channel, album,
-            caption=text,
-            parse_mode="html",
-            entities=entities,
-        )
-    else:
-        await client.send_message(
-            channel,
-            text,
-            parse_mode="html",
-            entities=entities,
-        )
-
-# ────────────────────────────────────────────────────────────────────────────
 async def main():
-    # логиним все клиенты
-    await asyncio.gather(*(acc["client"].start() for acc in ACCOUNTS))
+    # Start all clients (connect them)
+    await client1.start()
+    await client2.start()
+    await client3.start()
+    print("Telegram clients connected. Starting schedule loop...")
+    while True:
+        # Fetch all records from sheet
+        records = worksheet.get_all_records()  # this gives a list of dicts, excluding header
+        now = datetime.now(tz)
+        # Iterate with index to know which row to update (index 0 corresponds to sheet row 2, since row1 is header)
+        for idx, record in enumerate(records, start=2):  # start=2 to account for header row
+            sent_flag = record.get("Отправлено")  # could be boolean True/False or string "FALSE"/"TRUE"
+            # Normalize the sent flag to boolean
+            if sent_flag in [True, "TRUE", "True", "true"]:
+                sent = True
+            else:
+                sent = False
+            if sent:
+                continue  # skip already sent
+            time_str = record.get("Время")
+            if not time_str:
+                continue
+            # Parse the scheduled time
+            try:
+                sched_time = datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S")
+            except Exception as e:
+                # If parsing fails, skip this entry
+                print(f"Failed to parse time for row {idx}: {time_str}")
+                continue
+            # Localize to Armenia timezone
+            sched_time = tz.localize(sched_time)
+            if sched_time <= now:
+                # Time to send this post
+                try:
+                    await send_post(record, idx)  # pass the record and actual sheet row index
+                except Exception as e:
+                    print(f"Error while sending post for row {idx}: {e}")
+        # Wait for the next cycle
+        await asyncio.sleep(REFRESH_SECONDS)
 
-    # планируем посты
-    for acc in ACCOUNTS:
-        schedule_for_acc(acc)
-
-    scheduler.start()
-    print("Scheduler started.")
-
-    # Добавляем периодический опрос таблицы, если включено
-    if REFRESH_SEC:
-        for acc in ACCOUNTS:
-            scheduler.add_job(
-                schedule_for_acc,
-                trigger="interval",
-                seconds=REFRESH_SEC,
-                args=[acc],
-                max_instances=1,
-                next_run_time=datetime.now(TZ) + timedelta(seconds=REFRESH_SEC),
-            )
-        print(f"Auto‑refresh every {REFRESH_SEC} s")
-
-    # держим процесс, пока жив хотя бы один клиент
-    await asyncio.gather(*(acc["client"].run_until_disconnected() for acc in ACCOUNTS))
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# Run the main loop
+asyncio.run(main())
