@@ -196,8 +196,8 @@ async def send_post(record, row_idx):
 
     # Call‑to‑action line with ⚡️ emojis (id 8)
     message_html_lines.append(
-        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a> '
-        f'<b><i>Назначь встречу уже сегодня!</i></b> '
+        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>'
+        f'<b><i>Назначь встречу уже сегодня!</i></b>'
         f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>'
     )
 
