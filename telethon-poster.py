@@ -126,11 +126,6 @@ async def send_post(record, row_idx):
         f"Грудь - {bust}"
     )
 
-    price_block = (
-        f"Express - {express_price} AMD\n"
-        f"Incall - {incall_price} AMD\n"
-        f"Outcall -{outcall_price} AMD"
-    )
     # Build the message HTML string following the desired layout
     message_html_lines = []
 
@@ -167,25 +162,36 @@ async def send_post(record, row_idx):
     message_html_lines.append(f'<b>Фото {foto_checks}</b>')
     message_html_lines.append("")          # ← пропуск
 
-    # --- блок «Услуги»
-    message_html_lines.append("Услуги:")
-    message_html_lines.append(f'<b><i>{services}</i></b>')
-    message_html_lines.append("")          # ← пропуск
+    # --- блок «Услуги» (показываем только если поле непустое) ---
+    if services and str(services).strip():
+        message_html_lines.append("Услуги:")
+        message_html_lines.append(f'<b><i>{services}</i></b>')
+        message_html_lines.append("")      # пустая строка‑разделитель
 
-    # --- блок «Доп. услуги»
-    message_html_lines.append("Доп. услуги:")
-    message_html_lines.append(f'<b><i>{extra_services}</i></b>')
-    message_html_lines.append("")          # ← пропуск
+    # --- блок «Доп. услуги» (показываем только если поле непустое) ---
+    if extra_services and str(extra_services).strip():
+        message_html_lines.append("Доп. услуги:")
+        message_html_lines.append(f'<b><i>{extra_services}</i></b>')
+        message_html_lines.append("")      # пустая строка‑разделитель
 
     # --- блок «Параметры»
     message_html_lines.append("Параметры:")
     message_html_lines.append(f'<b><i>{params_block}</i></b>')
     message_html_lines.append("")          # ← пропуск
 
-    # --- блок «Цена»
-    message_html_lines.append("Цена:")
-    message_html_lines.append(f'<b><i>{price_block}</i></b>')
-    message_html_lines.append("")          # ← пропуск
+    # ─── формируем блок «Цена» динамически ───
+    price_lines = []
+    if express_price and str(express_price).strip():
+        price_lines.append(f"Express - {express_price}")
+    if incall_price and str(incall_price).strip():
+        price_lines.append(f"Incall - {incall_price}")
+    if outcall_price and str(outcall_price).strip():
+        price_lines.append(f"Outcall - {outcall_price}")
+
+    if price_lines:                         # выводим блок только если есть хотя бы одна цена
+        message_html_lines.append("Цена:")
+        message_html_lines.append(f'<b><i>{"\\n".join(price_lines)}</i></b>')
+        message_html_lines.append("")       # пустая строка‑разделитель
 
     # Call‑to‑action line with ⚡️ emojis (id 8)
     message_html_lines.append(
