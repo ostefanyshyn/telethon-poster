@@ -143,9 +143,9 @@ async def send_post(record, row_idx):
     # Add a blank line after the status
     message_html_lines.append("")
 
-    # line with prefix‑text from column U + crown
+    # line with crown (the skip_text already output as a separate line above)
     message_html_lines.append(
-        f'{skip_text}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
+        f'<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
     )
 
     # Bold + italic name
@@ -190,7 +190,7 @@ async def send_post(record, row_idx):
 
     if price_lines:                         # выводим блок только если есть хотя бы одна цена
         message_html_lines.append("Цена:")
-        message_html_lines.append(f'<b><i>{"\\n".join(price_lines)}</i></b>')
+        message_html_lines.append(f'<b><i>{"\n".join(price_lines)}</i></b>')
         message_html_lines.append("")       # пустая строка‑разделитель
 
     # Call‑to‑action line with ⚡️ emojis (id 8)
