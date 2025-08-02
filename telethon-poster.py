@@ -143,9 +143,10 @@ async def send_post(record, row_idx):
     # Add a blank line after the status
     message_html_lines.append("")
 
-    # line with crown (the skip_text already output as a separate line above)
+    # строка с короной и префиксом из столбца U (если есть)
+    prefix = f"{skip_text}" if skip_text else ""
     message_html_lines.append(
-        f'<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
+        f'{prefix}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
     )
 
     # Bold + italic name
