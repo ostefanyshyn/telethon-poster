@@ -119,12 +119,16 @@ async def send_post(record, row_idx):
     # Text that must appear *before* the crown sign on its own line
     skip_text = record.get("Пробелы перед короной", "")
     # ────────── compose parameter/price blocks ──────────
-    params_block = (
-        f"Возраст - {age}\n"
-        f"Рост - {height}\n"
-        f"Вес - {weight}\n"
-        f"Грудь - {bust}"
-    )
+    # Build parameter lines dynamically (show only non‑empty fields)
+    param_lines = []
+    if age and str(age).strip():
+        param_lines.append(f"Возраст - {age}")
+    if height and str(height).strip():
+        param_lines.append(f"Рост - {height}")
+    if weight and str(weight).strip():
+        param_lines.append(f"Вес - {weight}")
+    if bust and str(bust).strip():
+        param_lines.append(f"Грудь - {bust}")
 
     # Build the message HTML string following the desired layout
     message_html_lines = []
@@ -176,9 +180,10 @@ async def send_post(record, row_idx):
         message_html_lines.append("")      # пустая строка‑разделитель
 
     # --- блок «Параметры»
-    message_html_lines.append("Параметры:")
-    message_html_lines.append(f'<b><i>{params_block}</i></b>')
-    message_html_lines.append("")          # ← пропуск
+    if param_lines:                         # выводим блок только если есть хотя бы один параметр
+        message_html_lines.append("Параметры:")
+        message_html_lines.append(f'<b><i>{"\\n".join(param_lines)}</i></b>')
+        message_html_lines.append("")       # пустая строка‑разделитель
 
     # ─── формируем блок «Цена» динамически ───
     price_lines = []
