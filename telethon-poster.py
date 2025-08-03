@@ -182,17 +182,29 @@ async def send_post(record, row_idx):
     # --- блок «Параметры»
     if param_lines:                         # выводим блок только если есть хотя бы один параметр
         message_html_lines.append("Параметры:")
-        message_html_lines.append(f'<b><i>{"\\n".join(param_lines)}</i></b>')
+        message_html_lines.append(f'<b><i>{"\n".join(param_lines)}</i></b>')
         message_html_lines.append("")       # пустая строка‑разделитель
 
     # ─── формируем блок «Цена» динамически ───
+    def _fmt_price(val):
+        """
+        Convert cell value to '<value>.000 AMD' style.
+        If conversion fails, return the raw string with ' AMD' suffix.
+        """
+        try:
+            num = float(str(val).replace(",", "."))
+            # show always three decimals, e.g. 40.000
+            return f"{num:.3f} AMD"
+        except Exception:
+            return f"{val} AMD"
+
     price_lines = []
     if express_price and str(express_price).strip():
-        price_lines.append(f"Express - {express_price}")
+        price_lines.append(f"Express - {_fmt_price(express_price)}")
     if incall_price and str(incall_price).strip():
-        price_lines.append(f"Incall - {incall_price}")
+        price_lines.append(f"Incall - {_fmt_price(incall_price)}")
     if outcall_price and str(outcall_price).strip():
-        price_lines.append(f"Outcall - {outcall_price}")
+        price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
 
     if price_lines:                         # выводим блок только если есть хотя бы одна цена
         message_html_lines.append("Цена:")
