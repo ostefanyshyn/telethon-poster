@@ -139,8 +139,8 @@ async def send_post(record, row_idx):
 
     # ☁️  *status*  ☁️
     message_html_lines.append(
-        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> '
-        f'<i>{status}</i> '
+        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
+        f'<i>{status}</i>'
         f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
         
     )
