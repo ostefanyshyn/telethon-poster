@@ -302,6 +302,12 @@ async def main():
                 sent = False
             if sent:
                 continue  # skip already sent
+
+            # Skip the post entirely if the “Имя” cell is empty or whitespace
+            name_cell = record.get("Имя", "")
+            if not str(name_cell).strip():
+                continue
+
             time_str = record.get("Время")
             if not time_str:
                 continue
