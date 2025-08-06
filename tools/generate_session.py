@@ -3,7 +3,9 @@ from dotenv import load_dotenv
 from telethon.sync import TelegramClient
 from telethon.sessions import StringSession
 
-load_dotenv(".env.gen")
+# загружаем .env.gen, лежащий в той же папке, что и скрипт
+ENV_PATH = os.path.join(os.path.dirname(__file__), ".env.gen")
+load_dotenv(ENV_PATH)
 
 TG_PASSWORD = os.getenv("TG_PASSWORD", "")
 

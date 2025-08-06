@@ -41,10 +41,28 @@ worksheet = sheet.sheet1  # assuming data is in the first sheet
 # Timezone for parsing schedule times (Armenia)
 tz = pytz.timezone("Asia/Yerevan")
 
+
+# ---------------------------------------------------------------------------
+# SOCKS5 proxies for each account  (username : password : host : port)
+proxy1 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n443-sesstime-90',
+          'Qefmegpajkitdotxo7')
+proxy2 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n444-sesstime-90',
+          'Qefmegpajkitdotxo7')
+proxy3 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n445-sesstime-90',
+          'Qefmegpajkitdotxo7')
+
 # Telegram clients setup for three accounts
-client1 = TelegramClient(StringSession(TG1_SESSION) if TG1_SESSION else 'tg1_session', TG1_API_ID, TG1_API_HASH)
-client2 = TelegramClient(StringSession(TG2_SESSION) if TG2_SESSION else 'tg2_session', TG2_API_ID, TG2_API_HASH)
-client3 = TelegramClient(StringSession(TG3_SESSION) if TG3_SESSION else 'tg3_session', TG3_API_ID, TG3_API_HASH)
+client1 = TelegramClient(StringSession(TG1_SESSION) if TG1_SESSION else 'tg1_session',
+                         TG1_API_ID, TG1_API_HASH, proxy=proxy1)
+
+client2 = TelegramClient(StringSession(TG2_SESSION) if TG2_SESSION else 'tg2_session',
+                         TG2_API_ID, TG2_API_HASH, proxy=proxy2)
+
+client3 = TelegramClient(StringSession(TG3_SESSION) if TG3_SESSION else 'tg3_session',
+                         TG3_API_ID, TG3_API_HASH, proxy=proxy3)
 
 # ---------------------------------------------------------------------------
 # Custom HTML parser to convert <a href="emoji/{id}">X</a> into MessageEntityCustomEmoji
