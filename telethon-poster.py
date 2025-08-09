@@ -122,7 +122,7 @@ emoji_placeholders = {
 
 async def send_post(record, row_idx):
     """Send a post to all three channels based on the data in record (a dict)."""
-    status = record["Статус"]  # e.g., "Привет"
+    status = record.get("Статус") or record.get("Cтатус") or ""  # support both Cyrillic «Статус» and Latin «Cтатус»
     name = record["Имя"]
     services = record["Услуги"]
     extra_services = record["Доп. услуги"]
@@ -157,9 +157,9 @@ async def send_post(record, row_idx):
 
     # ☁️  *status*  ☁️
     message_html_lines.append(
-        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
+        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> '
         f'<i>{status}</i>'
-        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
+        f' <a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
         
     )
     # Add a blank line after the status
@@ -245,37 +245,32 @@ async def send_post(record, row_idx):
     # Join all parts with newline separator
     message_html = "\n".join(message_html_lines)
 
-    # Gather media files
-    file_count = 0
-    if "Фото в посте" in record:
-        # This column might be an int or string number indicating how many photos to attach
-        val = record["Фото в посте"]
-        if isinstance(val, int):
-            file_count = val
-        elif isinstance(val, str) and val.isdigit():
-            file_count = int(val)
-    # Get the photo URLs from Q, R, S, T (we have them in record if get_all_records is used, likely as keys or we use indices)
-    # The CSV header shows Photo URLs under keys 'Фото 1', 'Фото 2', etc., we need to match correctly.
-    photo_keys = [k for k in record.keys() if k.startswith("Фото ") or k.startswith("Photo")]
-    # Sort the keys to ensure order (Фото 1, Фото 2, ...)
-    photo_keys.sort()
-    photo_urls = []
-    for pk in photo_keys:
-        url = record[pk]
-        if url and isinstance(url, str) and url.startswith("http"):
-            photo_urls.append(url)
-    # Download photos into raw-byte tuples so each Telegram client gets its own BytesIO copy
+    # Gather media files (images/videos) — only from columns «Ссылка 1»..«Ссылка 4»
+    file_urls = []
+    for n in range(1, 5):
+        url = None
+        # accept both capitalized and lowercase header spelling of «Ссылка»
+        for key in (f"Ссылка {n}", f"ссылка {n}"):
+            if key in record:
+                url = record.get(key)
+                break
+        if isinstance(url, str):
+            u = url.strip()
+            if u.startswith("http"):
+                file_urls.append(u)
+
+    # Download all media into raw bytes so each Telegram client gets its own BytesIO copy
     photo_data = []  # list of (bytes, file_name)
-    if file_count > 0 and photo_urls:
-        for url in photo_urls[:file_count]:
+    if file_urls:
+        for url in file_urls:
             try:
                 resp = requests.get(url)
                 resp.raise_for_status()
                 file_data = resp.content
-                file_name = url.split("/")[-1] or "image.jpg"
+                file_name = url.split("/")[-1] or "file"
                 photo_data.append((file_data, file_name))
             except Exception as e:
-                print(f"Warning: failed to download image {url} - {e}")
+                print(f"Warning: failed to download media {url} - {e}")
     # Send message (with media if available) via all three clients concurrently
     tasks = []
     # Determine target channels (convert to int if needed)
