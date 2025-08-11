@@ -148,38 +148,68 @@ async def send_post(record, row_idx):
         url = record.get(f"Ссылка {n}") or record.get(f"ссылка {n}")
         if isinstance(url, str) and url.strip().startswith("http"):
             file_urls.append(url.strip())
-    # Download media and prepare BytesIO objects
-    media_files = []
+    # MODIFICATION START: Corrected media handling
+    def _infer_kind_name_and_mime(url, resp):
+        ct = (resp.headers.get("Content-Type") or "application/octet-stream").lower().split(";", 1)[0]
+        name = url.split("/")[-1].split("?")[0] or "file"
+        if "." not in name:
+            if "video/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
+            elif "image/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
+        lname = name.lower()
+        if any(lname.endswith(e) for e in (".mp4", ".mov", ".m4v", ".webm", ".mkv")) or "video/" in ct:
+            return "video", name, ct
+        if any(lname.endswith(e) for e in (".jpg", ".jpeg", ".png", ".webp", ".gif")) or "image/" in ct:
+            return "photo", name, ct
+        return "photo", name, "image/jpeg"
+
+    media_items = []
     if file_urls:
         for url in file_urls:
             try:
                 resp = requests.get(url)
                 resp.raise_for_status()
-                ct = (resp.headers.get("Content-Type") or "application/octet-stream").lower().split(";", 1)[0]
-                name = url.split("/")[-1].split("?")[0] or "file"
-                if "." not in name:
-                    if "video/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
-                    elif "image/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
-                bio = io.BytesIO(resp.content)
-                bio.name = name
-                media_files.append(bio)
+                kind, file_name, mime_type = _infer_kind_name_and_mime(url, resp)
+                media_items.append({"kind": kind, "data": resp.content, "name": file_name, "mime": mime_type})
             except Exception as e:
                 print(f"Warning: failed to download media {url} - {e}")
+
     async def send_to_channel(client, channel):
-        """Sends the message or media group to a single channel."""
-        if not media_files:
+        """Prepares media and sends it to a single channel."""
+        if not media_items:
             await client.send_message(channel, message_html)
             return
-        await client.send_file(channel, media_files, caption=message_html)
+
+        input_media_album = []
+        for item in media_items:
+            input_file = await client.upload_file(item["data"], file_name=item["name"])
+            
+            if item["kind"] == "video":
+                input_media_album.append(
+                    types.InputMediaUploadedDocument(
+                        file=input_file,
+                        mime_type=item["mime"],
+                        attributes=[types.DocumentAttributeVideo(duration=0, w=0, h=0, supports_streaming=True)]
+                    )
+                )
+            else:  # It's a photo
+                input_media_album.append(types.InputMediaUploadedPhoto(file=input_file))
+        
+        await client.send_file(channel, file=input_media_album[0] if len(input_media_album) == 1 else input_media_album, caption=message_html)
+
     # Send message via all three clients concurrently
     tasks = []
     channels = [TG1_CHANNEL, TG2_CHANNEL, TG3_CHANNEL]
     channels_int = [int(ch) if ch and (ch.isdigit() or ch.startswith("-")) else ch for ch in channels]
+    
     for client, channel in zip([client1, client2, client3], channels_int):
         if channel:
             tasks.append(send_to_channel(client, channel))
+    
     if tasks:
         await asyncio.gather(*tasks)
+    
+    # MODIFICATION END
+
     # Update the Google Sheet to mark as sent
     worksheet.update_cell(row_idx, 1, "TRUE")
     print(f"Posted and marked row {row_idx} as sent.")
