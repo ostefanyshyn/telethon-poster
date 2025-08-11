@@ -44,14 +44,14 @@ tz = pytz.timezone("Asia/Yerevan")
 
 # ---------------------------------------------------------------------------
 # SOCKS5 proxies for each account  (username : password : host : port)
-proxy1 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n443-sesstime-90',
+proxy1 = ('socks5', 'proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-sessid-u3udyoaiap7p131-sesstime-90',
           'Qefmegpajkitdotxo7')
-proxy2 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n444-sesstime-90',
+proxy2 = ('socks5', 'proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-sessid-u3udyoaiap7p132-sesstime-90',
           'Qefmegpajkitdotxo7')
-proxy3 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n445-sesstime-90',
+proxy3 = ('socks5', 'proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-sessid-u3udyoaiap7p133-sesstime-90',
           'Qefmegpajkitdotxo7')
 
 # Telegram clients setup for three accounts
