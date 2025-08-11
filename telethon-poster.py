@@ -8,8 +8,9 @@ import requests
 import io
 
 import gspread
-from telethon import TelegramClient
+from telethon import TelegramClient, types
 from telethon.sessions import StringSession
+from telethon.extensions import html as tl_html
 from dotenv import load_dotenv
 load_dotenv()  # automatically pull variables from a .env file into os.environ
 
@@ -34,7 +35,7 @@ REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
 credentials_json = json.loads(base64.b64decode(GOOGLE_CREDS_JSON)) if GOOGLE_CREDS_JSON else None
 
 # Authorize gspread and open the sheet
-gc = gspread.service_account_from_dict(credentials_json)  # use creds dict [oai_citation:12‡stackoverflow.com](https://stackoverflow.com/questions/71869394/python-make-gspread-service-account-take-a-python-dictionary-or-string-instead#:~:text=import%20gspread) [oai_citation:13‡stackoverflow.com](https://stackoverflow.com/questions/71869394/python-make-gspread-service-account-take-a-python-dictionary-or-string-instead#:~:text=gc%20%3D%20gspread)
+gc = gspread.service_account_from_dict(credentials_json)
 sheet = gc.open_by_key(GSHEET_ID)
 worksheet = sheet.sheet1  # assuming data is in the first sheet
 
@@ -68,9 +69,6 @@ client3 = TelegramClient(StringSession(TG3_SESSION) if TG3_SESSION else 'tg3_ses
 
 # ---------------------------------------------------------------------------
 # Custom HTML parser to convert <a href="emoji/{id}">X</a> into MessageEntityCustomEmoji
-from telethon.extensions import html as tl_html
-from telethon import types
-
 class CustomHtml:
     @staticmethod
     def parse(text):
@@ -99,32 +97,18 @@ for _c in (client1, client2, client3):
 
 # Custom emoji IDs as given
 emoji_ids = {
-    1: 5429293125518510398,
-    2: 5814534640949530526,
-    3: 5370853949358218655,
-    4: 5370674552869232639,
-    5: 5372943137415111238,
-    6: 5373338978780979795,
-    7: 5372991528811635071,
-    8: 5364098734600762220,
-    9: 5460811944883660881
+    1: 5429293125518510398, 2: 5814534640949530526, 3: 5370853949358218655,
+    4: 5370674552869232639, 5: 5372943137415111238, 6: 5373338978780979795,
+    7: 5372991528811635071, 8: 5364098734600762220, 9: 5460811944883660881
 }
-# Placeholder symbols for each emoji (using generic or related Unicode emoji)
+# Placeholder symbols for each emoji
 emoji_placeholders = {
-    1: "☁️",  # crown (assumed for status)
-    2: "👑",  # star or any symbol for second line
-    3: "✅",  # camera for photo (example)
-    4: "✅",
-    5: "✅",
-    6: "✅",
-    7: "✅",
-    8: "⚡️",  # fire or any highlight emoji for call-to-action
-    9: "😜",  # playful face for contact link
+    1: "☁️", 2: "👑", 3: "✅", 4: "✅", 5: "✅", 6: "✅", 7: "✅", 8: "⚡️", 9: "😜",
 }
 
 async def send_post(record, row_idx):
     """Send a post to all three channels based on the data in record (a dict)."""
-    status = record.get("Статус") or record.get("Cтатус") or ""  # support both Cyrillic «Статус» and Latin «Cтатус»
+    status = record.get("Статус") or record.get("Cтатус") or ""
     name = record["Имя"]
     services = record["Услуги"]
     extra_services = record["Доп. услуги"]
@@ -136,247 +120,171 @@ async def send_post(record, row_idx):
     incall_price = record["Incall"]
     outcall_price = record["Outcall"]
     whatsapp_link = record["WhatsApp"]
-    # Text that must appear *before* the crown sign on its own line
     skip_text = record.get("Пробелы перед короной", "")
-    # ────────── compose parameter/price blocks ──────────
-    # Build parameter lines dynamically (show only non‑empty fields)
+
+    # Build parameter lines dynamically
     param_lines = []
-    if age and str(age).strip():
-        param_lines.append(f"Возраст - {age}")
-    if height and str(height).strip():
-        param_lines.append(f"Рост - {height}")
-    if weight and str(weight).strip():
-        param_lines.append(f"Вес - {weight}")
-    if bust and str(bust).strip():
-        param_lines.append(f"Грудь - {bust}")
+    if age and str(age).strip(): param_lines.append(f"Возраст - {age}")
+    if height and str(height).strip(): param_lines.append(f"Рост - {height}")
+    if weight and str(weight).strip(): param_lines.append(f"Вес - {weight}")
+    if bust and str(bust).strip(): param_lines.append(f"Грудь - {bust}")
 
-    # Build the message HTML string following the desired layout
+    # Build the message HTML string
     message_html_lines = []
-
-    # Optional blank lines before the first line
-    if skip_text and skip_text.strip() != "":
-        message_html_lines.append(skip_text)
-
-    # ☁️  *status*  ☁️
-    message_html_lines.append(
-        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> '
-        f'<i>{status}</i>'
-        f' <a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
-        
-    )
-    # Add a blank line after the status
-    message_html_lines.append("")
-
-    # строка с короной и префиксом из столбца U (если есть)
-    prefix = f"{skip_text}" if skip_text else ""
-    message_html_lines.append(
-        f'{prefix}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
-    )
-
-    # Bold + italic name
-    message_html_lines.append(f'<b><i>{name}</i></b>')
-
-    # Bold “Фото …” line with five check‑mark emojis
-    foto_checks = "".join(
-        f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>'
-        for i in range(3, 8)
-    )   
+    if skip_text and skip_text.strip() != "": message_html_lines.append(skip_text)
     
-    # --- после строки «Фото …»
+    message_html_lines.append(f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> <i>{status}</i> <a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>')
+    message_html_lines.append("")
+    
+    prefix = f"{skip_text}" if skip_text else ""
+    message_html_lines.append(f'{prefix}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>')
+    message_html_lines.append(f'<b><i>{name}</i></b>')
+    
+    foto_checks = "".join(f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>' for i in range(3, 8))
     message_html_lines.append("")
     message_html_lines.append(f'<b>Фото {foto_checks}</b>')
-    message_html_lines.append("")          # ← пропуск
+    message_html_lines.append("")
 
-    # --- блок «Услуги» (показываем только если поле непустое) ---
     if services and str(services).strip():
-        message_html_lines.append("Услуги:")
-        message_html_lines.append(f'<b><i>{services}</i></b>')
-        message_html_lines.append("")      # пустая строка‑разделитель
-
-    # --- блок «Доп. услуги» (показываем только если поле непустое) ---
+        message_html_lines.extend(["Услуги:", f'<b><i>{services}</i></b>', ""])
     if extra_services and str(extra_services).strip():
-        message_html_lines.append("Доп. услуги:")
-        message_html_lines.append(f'<b><i>{extra_services}</i></b>')
-        message_html_lines.append("")      # пустая строка‑разделитель
+        message_html_lines.extend(["Доп. услуги:", f'<b><i>{extra_services}</i></b>', ""])
+    if param_lines:
+        message_html_lines.extend(["Параметры:", f'<b><i>{"\n".join(param_lines)}</i></b>', ""])
 
-    # --- блок «Параметры»
-    if param_lines:                         # выводим блок только если есть хотя бы один параметр
-        message_html_lines.append("Параметры:")
-        message_html_lines.append(f'<b><i>{"\n".join(param_lines)}</i></b>')
-        message_html_lines.append("")       # пустая строка‑разделитель
-
-    # ─── формируем блок «Цена» динамически ───
     def _fmt_price(val):
-        """
-        Convert cell value to '<value>.000 AMD' style.
-        If conversion fails, return the raw string with ' AMD' suffix.
-        """
-        try:
-            num = float(str(val).replace(",", "."))
-            # show always three decimals, e.g. 40.000
-            return f"{num:.3f} AMD"
-        except Exception:
-            return f"{val} AMD"
+        try: return f"{float(str(val).replace(',', '.')):.3f} AMD"
+        except Exception: return f"{val} AMD"
 
     price_lines = []
-    if express_price and str(express_price).strip():
-        price_lines.append(f"Express - {_fmt_price(express_price)}")
-    if incall_price and str(incall_price).strip():
-        price_lines.append(f"Incall - {_fmt_price(incall_price)}")
-    if outcall_price and str(outcall_price).strip():
-        price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
+    if express_price and str(express_price).strip(): price_lines.append(f"Express - {_fmt_price(express_price)}")
+    if incall_price and str(incall_price).strip(): price_lines.append(f"Incall - {_fmt_price(incall_price)}")
+    if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
 
-    if price_lines:                         # выводим блок только если есть хотя бы одна цена
-        message_html_lines.append("Цена:")
-        message_html_lines.append(f'<b><i>{"\n".join(price_lines)}</i></b>')
-        message_html_lines.append("")       # пустая строка‑разделитель
+    if price_lines:
+        message_html_lines.extend(["Цена:", f'<b><i>{"\n".join(price_lines)}</i></b>', ""])
 
-    # Call‑to‑action line with ⚡️ emojis (id 8)
-    message_html_lines.append(
-        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>'
-        f'<b><i>Назначь встречу уже сегодня!</i></b>'
-        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>'
-    )
-
-    # Contact line with 😌 (id 9)
-    message_html_lines.append(
-        f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a> '
-        f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>'
-    )
-
-    # Join all parts with newline separator
+    message_html_lines.append(f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a><b><i>Назначь встречу уже сегодня!</i></b><a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>')
+    message_html_lines.append(f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a> <a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>')
     message_html = "\n".join(message_html_lines)
 
-    # Gather media files (images/videos) — only from columns «Ссылка 1»..«Ссылка 4»
+    # Gather media URLs
     file_urls = []
     for n in range(1, 5):
-        url = None
-        for key in (f"Ссылка {n}", f"ссылка {n}"):
-            if key in record:
-                url = record.get(key)
-                break
-        if isinstance(url, str):
-            u = url.strip()
-            if u.startswith("http"):
-                file_urls.append(u)
+        url = record.get(f"Ссылка {n}") or record.get(f"ссылка {n}")
+        if isinstance(url, str) and url.strip().startswith("http"):
+            file_urls.append(url.strip())
 
-    # Download all media into raw bytes so each Telegram client gets its own BytesIO copy.
-    # Keep the ORIGINAL ORDER and allow mixed photo+video albums in one post.
-    media_items = []  # list of {"kind": "photo"|"video", "data": bytes, "name": str}
-
-    def _infer_kind_and_name(url, resp):
-        ct = (resp.headers.get("Content-Type") or "").lower()
-        name = url.split("/")[-1] or "file"
-        # add an extension from content-type if missing
+    # MODIFICATION START: Corrected media handling
+    def _infer_kind_name_and_mime(url, resp):
+        ct = (resp.headers.get("Content-Type") or "application/octet-stream").lower().split(";", 1)[0]
+        name = url.split("/")[-1].split("?")[0] or "file"
         if "." not in name:
-            if "video/" in ct:
-                ext = "mp4" if "mp4" in ct else ct.split("/", 1)[1].split(";", 1)[0]
-                name = f"{name}.{ext}"
-            elif "image/" in ct:
-                ext = ct.split("/", 1)[1].split(";", 1)[0]
-                name = f"{name}.{ext}"
+            if "video/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
+            elif "image/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
         lname = name.lower()
         if any(lname.endswith(e) for e in (".mp4", ".mov", ".m4v", ".webm", ".mkv")) or "video/" in ct:
-            return "video", name
+            return "video", name, ct
         if any(lname.endswith(e) for e in (".jpg", ".jpeg", ".png", ".webp", ".gif")) or "image/" in ct:
-            return "photo", name
-        # default to photo so at least something is sent
-        return "photo", name
+            return "photo", name, ct
+        return "photo", name, "image/jpeg"
 
+    media_items = []
     if file_urls:
         for url in file_urls:
             try:
                 resp = requests.get(url)
                 resp.raise_for_status()
-                kind, file_name = _infer_kind_and_name(url, resp)
-                media_items.append({"kind": kind, "data": resp.content, "name": file_name})
+                kind, file_name, mime_type = _infer_kind_name_and_mime(url, resp)
+                media_items.append({"kind": kind, "data": resp.content, "name": file_name, "mime": mime_type})
             except Exception as e:
                 print(f"Warning: failed to download media {url} - {e}")
 
-    # Send message (with media if available) via all three clients concurrently
-    tasks = []
-    # Determine target channels (convert to int if needed)
-    channels = [TG1_CHANNEL, TG2_CHANNEL, TG3_CHANNEL]
-    channels = [int(ch) if ch and ch.isdigit() or (ch and ch.startswith("-")) else ch for ch in channels]
-    # Prepare send tasks
-    for client, channel in zip([client1, client2, client3], channels):
-        if media_items:
-            file_objs = []
-            for item in media_items:
-                bio = io.BytesIO(item["data"])  # fresh BytesIO for each client
-                bio.name = item["name"]
-                file_objs.append(bio)
-            # One album with mixed media; caption will appear on the first item in the album
-            tasks.append(
-                client.send_file(
-                    channel,
-                    file_objs,
-                    caption=message_html,
-                    supports_streaming=True,   # ensure videos are treated as videos
-                    force_document=False       # let Telegram detect photo/video
+    async def send_to_channel(client, channel):
+        """Prepares media and sends it to a single channel."""
+        if not media_items:
+            await client.send_message(channel, message_html)
+            return
+
+        input_media_album = []
+        for item in media_items:
+            input_file = await client.upload_file(item["data"], file_name=item["name"])
+            
+            if item["kind"] == "video":
+                input_media_album.append(
+                    types.InputMediaUploadedDocument(
+                        file=input_file,
+                        mime_type=item["mime"],
+                        attributes=[types.DocumentAttributeVideo(duration=0, w=0, h=0, supports_streaming=True)]
+                    )
                 )
-            )
-        else:
-            tasks.append(client.send_message(channel, message_html))
-    # Run all send tasks concurrently
-    await asyncio.gather(*tasks)
-    # Update the Google Sheet to mark as sent (column A to TRUE)
-    worksheet.update_cell(row_idx, 1, "TRUE")  # row_idx is actual sheet row index (1-based). Column 1 = A.
+            else: # It's a photo
+                input_media_album.append(types.InputMediaUploadedPhoto(file=input_file))
+        
+        await client.send_file(channel, file=input_media_album, caption=message_html)
+
+    # Send message via all three clients concurrently
+    tasks = []
+    channels = [TG1_CHANNEL, TG2_CHANNEL, TG3_CHANNEL]
+    channels_int = [int(ch) if ch and (ch.isdigit() or ch.startswith("-")) else ch for ch in channels]
+    
+    for client, channel in zip([client1, client2, client3], channels_int):
+        if channel:
+            tasks.append(send_to_channel(client, channel))
+    
+    if tasks:
+        await asyncio.gather(*tasks)
+    
+    # MODIFICATION END
+
+    # Update the Google Sheet to mark as sent
+    worksheet.update_cell(row_idx, 1, "TRUE")
     print(f"Posted and marked row {row_idx} as sent.")
 
+
 async def main():
-    # Start all clients (connect them)
+    """Main loop to connect clients and check the schedule."""
     await client1.start()
     await client2.start()
     await client3.start()
     print("Telegram clients connected. Starting schedule loop...")
     while True:
-        # Fetch all records from sheet
-        records = worksheet.get_all_records()  # this gives a list of dicts, excluding header
-        now = datetime.now(tz)
-        # Iterate with index to know which row to update (index 0 corresponds to sheet row 2, since row1 is header)
-        for idx, record in enumerate(records, start=2):  # start=2 to account for header row
-            sent_flag = record.get("Отправлено")  # could be boolean or string
-            def _is_sent_value(v):
-                if isinstance(v, bool):
-                    return v
-                s = str(v).strip().lower()
-                return s in ("true", "1", "yes", "да", "y", "sent", "in_progress", "ок", "ok", "✔", "✅")
-            sent = _is_sent_value(sent_flag)
-            if sent or idx in processed_rows:
-                continue  # skip already sent or already queued in this runtime
+        try:
+            records = worksheet.get_all_records()
+            now = datetime.now(tz)
+            for idx, record in enumerate(records, start=2):
+                sent_flag = record.get("Отправлено")
+                def _is_sent_value(v):
+                    if isinstance(v, bool): return v
+                    return str(v).strip().lower() in ("true", "1", "yes", "да", "y", "sent", "in_progress", "ок", "ok", "✔", "✅")
+                
+                if _is_sent_value(sent_flag) or idx in processed_rows or not str(record.get("Имя", "")).strip():
+                    continue
 
-            # Skip the post entirely if the “Имя” cell is empty or whitespace
-            name_cell = record.get("Имя", "")
-            if not str(name_cell).strip():
-                continue
+                time_str = record.get("Время")
+                if not time_str: continue
 
-            time_str = record.get("Время")
-            if not time_str:
-                continue
-            # Parse the scheduled time
-            try:
-                sched_time = datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S")
-            except Exception as e:
-                # If parsing fails, skip this entry
-                print(f"Failed to parse time for row {idx}: {time_str}")
-                continue
-            # Localize to Armenia timezone
-            sched_time = tz.localize(sched_time)
-            if sched_time <= now:
-                # Time to send this post
                 try:
-                    # Optimistic lock to prevent duplicate posts across loops/instances
+                    sched_time = tz.localize(datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S"))
+                except Exception:
+                    print(f"Failed to parse time for row {idx}: {time_str}")
+                    continue
+
+                if sched_time <= now:
                     try:
-                        worksheet.update_cell(idx, 1, "IN_PROGRESS")  # column A assumed for "Отправлено"
+                        worksheet.update_cell(idx, 1, "IN_PROGRESS")
                     except Exception as e:
                         print(f"Warning: failed to set IN_PROGRESS for row {idx}: {e}")
+                    
                     processed_rows.add(idx)
-                    await send_post(record, idx)  # pass the record and actual sheet row index
-                except Exception as e:
-                    print(f"Error while sending post for row {idx}: {e}")
-        # Wait for the next cycle
+                    await send_post(record, idx)
+
+        except Exception as e:
+            print(f"An error occurred in the main loop: {e}")
+            print("Restarting loop after a short delay...")
+        
         await asyncio.sleep(REFRESH_SECONDS)
 
 # Run the main loop
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
