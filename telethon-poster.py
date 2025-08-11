@@ -208,12 +208,8 @@ async def main():
                     print(f"Failed to parse time for row {idx}: {time_str}")
                     continue
                 if sched_time <= now:
-                    delta_sec = (now - sched_time).total_seconds()
-                    if delta_sec <= 300:  # 5 minutes
-                        processed_rows.add(idx)
-                        await send_post(record, idx)
-                    else:
-                        processed_rows.add(idx)
+                    processed_rows.add(idx)
+                    await send_post(record, idx)
         except Exception as e:
             print(f"An error occurred in the main loop: {e}")
             print("Restarting loop after a short delay...")
