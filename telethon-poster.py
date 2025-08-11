@@ -2,16 +2,17 @@ import os
 import asyncio
 import base64
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import requests
 import io
+
 import gspread
-from telethon import TelegramClient, types
+from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.extensions import html as tl_html
 from dotenv import load_dotenv
 load_dotenv()  # automatically pull variables from a .env file into os.environ
+
 # Load configuration from environment variables
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON")
@@ -27,37 +28,47 @@ TG3_API_ID = int(os.environ.get("TG3_API_ID", 0))
 TG3_API_HASH = os.environ.get("TG3_API_HASH")
 TG3_SESSION = os.environ.get("TG3_SESSION")
 TG3_CHANNEL = os.environ.get("TG3_CHANNEL")
-REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 60))
+REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
+
 # Parse Google service account credentials from the base64 JSON string
 credentials_json = json.loads(base64.b64decode(GOOGLE_CREDS_JSON)) if GOOGLE_CREDS_JSON else None
+
 # Authorize gspread and open the sheet
-gc = gspread.service_account_from_dict(credentials_json)
+gc = gspread.service_account_from_dict(credentials_json)  # use creds dict [oai_citation:12‡stackoverflow.com](https://stackoverflow.com/questions/71869394/python-make-gspread-service-account-take-a-python-dictionary-or-string-instead#:~:text=import%20gspread) [oai_citation:13‡stackoverflow.com](https://stackoverflow.com/questions/71869394/python-make-gspread-service-account-take-a-python-dictionary-or-string-instead#:~:text=gc%20%3D%20gspread)
 sheet = gc.open_by_key(GSHEET_ID)
 worksheet = sheet.sheet1  # assuming data is in the first sheet
+
 # Timezone for parsing schedule times (Armenia)
 tz = pytz.timezone("Asia/Yerevan")
-# Avoid duplicate sends within a single runtime
-processed_rows = set()
+
+
 # ---------------------------------------------------------------------------
-# SOCKS5 proxies for each account (username : password : host : port)
+# SOCKS5 proxies for each account  (username : password : host : port)
 proxy1 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n443-sesstime-90',
-'Qefmegpajkitdotxo7')
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n443-sesstime-90',
+          'Qefmegpajkitdotxo7')
 proxy2 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n444-sesstime-90',
-'Qefmegpajkitdotxo7')
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n444-sesstime-90',
+          'Qefmegpajkitdotxo7')
 proxy3 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n445-sesstime-90',
-'Qefmegpajkitdotxo7')
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n445-sesstime-90',
+          'Qefmegpajkitdotxo7')
+
 # Telegram clients setup for three accounts
 client1 = TelegramClient(StringSession(TG1_SESSION) if TG1_SESSION else 'tg1_session',
-TG1_API_ID, TG1_API_HASH, proxy=proxy1)
+                         TG1_API_ID, TG1_API_HASH, proxy=proxy1)
+
 client2 = TelegramClient(StringSession(TG2_SESSION) if TG2_SESSION else 'tg2_session',
-TG2_API_ID, TG2_API_HASH, proxy=proxy2)
+                         TG2_API_ID, TG2_API_HASH, proxy=proxy2)
+
 client3 = TelegramClient(StringSession(TG3_SESSION) if TG3_SESSION else 'tg3_session',
-TG3_API_ID, TG3_API_HASH, proxy=proxy3)
+                         TG3_API_ID, TG3_API_HASH, proxy=proxy3)
+
 # ---------------------------------------------------------------------------
 # Custom HTML parser to convert <a href="emoji/{id}">X</a> into MessageEntityCustomEmoji
+from telethon.extensions import html as tl_html
+from telethon import types
+
 class CustomHtml:
     @staticmethod
     def parse(text):
@@ -69,6 +80,7 @@ class CustomHtml:
                     e.offset, e.length, document_id=emoji_id
                 )
         return text, entities
+
     @staticmethod
     def unparse(text, entities):
         # Needed if you ever download messages and turn entities back into HTML
@@ -78,23 +90,39 @@ class CustomHtml:
                     e.offset, e.length, url=f"emoji/{e.document_id}"
                 )
         return tl_html.unparse(text, entities)
+
 # Set the custom HTML parser as the parse_mode for all three Telegram clients
 for _c in (client1, client2, client3):
     _c.parse_mode = CustomHtml()
+
 # Custom emoji IDs as given
 emoji_ids = {
-    1: 5429293125518510398, 2: 5814534640949530526, 3: 5370853949358218655,
-    4: 5370674552869232639, 5: 5372943137415111238, 6: 5373338978780979795,
-    7: 5372991528811635071, 8: 5364098734600762220, 9: 5460811944883660881
+    1: 5429293125518510398,
+    2: 5814534640949530526,
+    3: 5370853949358218655,
+    4: 5370674552869232639,
+    5: 5372943137415111238,
+    6: 5373338978780979795,
+    7: 5372991528811635071,
+    8: 5364098734600762220,
+    9: 5460811944883660881
 }
-# Placeholder symbols for each emoji
+# Placeholder symbols for each emoji (using generic or related Unicode emoji)
 emoji_placeholders = {
-    1: "☁️", 2: "👑", 3: "✅", 4: "✅", 5: "✅", 6: "✅", 7: "✅", 8: "⚡️", 9: "😜",
+    1: "☁️",  # crown (assumed for status)
+    2: "👑",  # star or any symbol for second line
+    3: "✅",  # camera for photo (example)
+    4: "✅",
+    5: "✅",
+    6: "✅",
+    7: "✅",
+    8: "⚡️",  # fire or any highlight emoji for call-to-action
+    9: "😜",  # playful face for contact link
 }
+
 async def send_post(record, row_idx):
     """Send a post to all three channels based on the data in record (a dict)."""
-    print(f"Attempting to send post for row {row_idx}")
-    status = record.get("Статус") or record.get("Cтатус") or ""
+    status = record.get("Статус") or ""  # support both Cyrillic «Статус» and Latin «Cтатус»
     name = record["Имя"]
     services = record["Услуги"]
     extra_services = record["Доп. услуги"]
@@ -106,135 +134,213 @@ async def send_post(record, row_idx):
     incall_price = record["Incall"]
     outcall_price = record["Outcall"]
     whatsapp_link = record["WhatsApp"]
+    # Text that must appear *before* the crown sign on its own line
     skip_text = record.get("Пробелы перед короной", "")
-    # Build parameter lines dynamically
+    # ────────── compose parameter/price blocks ──────────
+    # Build parameter lines dynamically (show only non‑empty fields)
     param_lines = []
-    if age and str(age).strip(): param_lines.append(f"Возраст - {age}")
-    if height and str(height).strip(): param_lines.append(f"Рост - {height}")
-    if weight and str(weight).strip(): param_lines.append(f"Вес - {weight}")
-    if bust and str(bust).strip(): param_lines.append(f"Грудь - {bust}")
-    # Build the message HTML string
+    if age and str(age).strip():
+        param_lines.append(f"Возраст - {age}")
+    if height and str(height).strip():
+        param_lines.append(f"Рост - {height}")
+    if weight and str(weight).strip():
+        param_lines.append(f"Вес - {weight}")
+    if bust and str(bust).strip():
+        param_lines.append(f"Грудь - {bust}")
+
+    # Build the message HTML string following the desired layout
     message_html_lines = []
-    if skip_text and skip_text.strip() != "": message_html_lines.append(skip_text)
-    message_html_lines.append(f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> <i>{status}</i> <a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>')
+
+    # Optional blank lines before the first line
+    if skip_text and skip_text.strip() != "":
+        message_html_lines.append(skip_text)
+
+    # ☁️  *status*  ☁️
+    message_html_lines.append(
+        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> '
+        f'<i>{status}</i>'
+        f' <a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>'
+        
+    )
+    # Add a blank line after the status
     message_html_lines.append("")
+
+    # строка с короной и префиксом из столбца U (если есть)
     prefix = f"{skip_text}" if skip_text else ""
-    message_html_lines.append(f'{prefix}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>')
+    message_html_lines.append(
+        f'{prefix}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
+    )
+
+    # Bold + italic name
     message_html_lines.append(f'<b><i>{name}</i></b>')
-    foto_checks = "".join(f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>' for i in range(3, 8))
+
+    # Bold “Фото …” line with five check‑mark emojis
+    foto_checks = "".join(
+        f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>'
+        for i in range(3, 8)
+    )   
+    
+    # --- после строки «Фото …»
     message_html_lines.append("")
     message_html_lines.append(f'<b>Фото {foto_checks}</b>')
-    message_html_lines.append("")
+    message_html_lines.append("")          # ← пропуск
+
+    # --- блок «Услуги» (показываем только если поле непустое) ---
     if services and str(services).strip():
-        message_html_lines.extend(["Услуги:", f'<b><i>{services}</i></b>', ""])
+        message_html_lines.append("Услуги:")
+        message_html_lines.append(f'<b><i>{services}</i></b>')
+        message_html_lines.append("")      # пустая строка‑разделитель
+
+    # --- блок «Доп. услуги» (показываем только если поле непустое) ---
     if extra_services and str(extra_services).strip():
-        message_html_lines.extend(["Доп. услуги:", f'<b><i>{extra_services}</i></b>', ""])
-    if param_lines:
-        message_html_lines.extend(["Параметры:", f'<b><i>{"\n".join(param_lines)}</i></b>', ""])
+        message_html_lines.append("Доп. услуги:")
+        message_html_lines.append(f'<b><i>{extra_services}</i></b>')
+        message_html_lines.append("")      # пустая строка‑разделитель
+
+    # --- блок «Параметры»
+    if param_lines:                         # выводим блок только если есть хотя бы один параметр
+        message_html_lines.append("Параметры:")
+        message_html_lines.append(f'<b><i>{"\n".join(param_lines)}</i></b>')
+        message_html_lines.append("")       # пустая строка‑разделитель
+
+    # ─── формируем блок «Цена» динамически ───
     def _fmt_price(val):
-        try: return f"{float(str(val).replace(',', '.')):.3f} AMD"
-        except Exception: return f"{val} AMD"
+        """
+        Convert cell value to '<value>.000 AMD' style.
+        If conversion fails, return the raw string with ' AMD' suffix.
+        """
+        try:
+            num = float(str(val).replace(",", "."))
+            # show always three decimals, e.g. 40.000
+            return f"{num:.3f} AMD"
+        except Exception:
+            return f"{val} AMD"
+
     price_lines = []
-    if express_price and str(express_price).strip(): price_lines.append(f"Express - {_fmt_price(express_price)}")
-    if incall_price and str(incall_price).strip(): price_lines.append(f"Incall - {_fmt_price(incall_price)}")
-    if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
-    if price_lines:
-        message_html_lines.extend(["Цена:", f'<b><i>{"\n".join(price_lines)}</i></b>', ""])
-    message_html_lines.append(f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a><b><i>Назначь встречу уже сегодня!</i></b><a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>')
-    message_html_lines.append(f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a> <a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>')
+    if express_price and str(express_price).strip():
+        price_lines.append(f"Express - {_fmt_price(express_price)}")
+    if incall_price and str(incall_price).strip():
+        price_lines.append(f"Incall - {_fmt_price(incall_price)}")
+    if outcall_price and str(outcall_price).strip():
+        price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
+
+    if price_lines:                         # выводим блок только если есть хотя бы одна цена
+        message_html_lines.append("Цена:")
+        message_html_lines.append(f'<b><i>{"\n".join(price_lines)}</i></b>')
+        message_html_lines.append("")       # пустая строка‑разделитель
+
+    # Call‑to‑action line with ⚡️ emojis (id 8)
+    message_html_lines.append(
+        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>'
+        f'<b><i>Назначь встречу уже сегодня!</i></b>'
+        f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>'
+    )
+
+    # Contact line with 😌 (id 9)
+    message_html_lines.append(
+        f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a> '
+        f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>'
+    )
+
+    # Join all parts with newline separator
     message_html = "\n".join(message_html_lines)
-    # Gather media URLs
+
+    # Gather media files (images/videos) — only from columns «Ссылка 1»..«Ссылка 4»
     file_urls = []
     for n in range(1, 5):
-        url = record.get(f"Ссылка {n}") or record.get(f"ссылка {n}")
-        if isinstance(url, str) and url.strip().startswith("http"):
-            file_urls.append(url.strip())
-    print(f"Media URLs for row {row_idx}: {file_urls}")
-    # Download media and prepare BytesIO objects
-    media_files = []
+        url = None
+        # accept both capitalized and lowercase header spelling of «Ссылка»
+        for key in (f"Ссылка {n}", f"ссылка {n}"):
+            if key in record:
+                url = record.get(key)
+                break
+        if isinstance(url, str):
+            u = url.strip()
+            if u.startswith("http"):
+                file_urls.append(u)
+
+    # Download all media into raw bytes so each Telegram client gets its own BytesIO copy
+    photo_data = []  # list of (bytes, file_name)
     if file_urls:
         for url in file_urls:
             try:
                 resp = requests.get(url)
                 resp.raise_for_status()
-                ct = (resp.headers.get("Content-Type") or "application/octet-stream").lower().split(";", 1)[0]
-                name = url.split("/")[-1].split("?")[0] or "file"
-                if "." not in name:
-                    if "video/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
-                    elif "image/" in ct: name = f"{name}.{ct.split('/', 1)[1]}"
-                bio = io.BytesIO(resp.content)
-                bio.name = name
-                media_files.append(bio)
+                file_data = resp.content
+                file_name = url.split("/")[-1] or "file"
+                photo_data.append((file_data, file_name))
             except Exception as e:
                 print(f"Warning: failed to download media {url} - {e}")
-    async def send_to_channel(client, channel):
-        """Sends the message or media group to a single channel."""
-        print(f"Sending to channel {channel}")
-        if not media_files:
-            await client.send_message(channel, message_html)
-            return
-        await client.send_file(channel, media_files, caption=message_html)
-    # Send message via all three clients concurrently
+    # Send message (with media if available) via all three clients concurrently
     tasks = []
+    # Determine target channels (convert to int if needed)
     channels = [TG1_CHANNEL, TG2_CHANNEL, TG3_CHANNEL]
-    channels_int = [int(ch) if ch and (ch.isdigit() or ch.startswith("-")) else ch for ch in channels]
-    for client, channel in zip([client1, client2, client3], channels_int):
-        if channel:
-            tasks.append(send_to_channel(client, channel))
-    if tasks:
-        try:
-            await asyncio.gather(*tasks)
-            worksheet.update_cell(row_idx, 1, "TRUE")
-            print(f"Successfully posted and marked row {row_idx} as sent.")
-        except Exception as e:
-            print(f"Error sending post for row {row_idx}: {e}")
-    else:
-        print(f"No channels configured for row {row_idx}")
+    # Convert channel IDs to int for Telethon if they look like integers
+    channels = [int(ch) if ch and ch.isdigit() or (ch and ch.startswith("-")) else ch for ch in channels]
+    # Prepare send tasks
+    for client, channel in zip([client1, client2, client3], channels):
+        if photo_data:
+            # Re‑instantiate fresh BytesIO objects so each client gets independent streams
+            file_objs = []
+            for data, fname in photo_data:
+                bio = io.BytesIO(data)
+                bio.name = fname
+                file_objs.append(bio)
+            tasks.append(client.send_file(channel, file_objs, caption=message_html))
+        else:
+            tasks.append(client.send_message(channel, message_html))
+    # Run all send tasks concurrently
+    await asyncio.gather(*tasks)
+    # Update the Google Sheet to mark as sent (column A to TRUE)
+    worksheet.update_cell(row_idx, 1, "TRUE")  # row_idx is actual sheet row index (1-based). Column 1 = A.
+    print(f"Posted and marked row {row_idx} as sent.")
+
 async def main():
-    """Main loop to connect clients and check the schedule."""
+    # Start all clients (connect them)
     await client1.start()
     await client2.start()
     await client3.start()
     print("Telegram clients connected. Starting schedule loop...")
     while True:
-        try:
-            records = worksheet.get_all_records()
-            now = datetime.now(tz)
-            print(f"Current time: {now}")
-            for idx, record in enumerate(records, start=2):
-                sent_flag = record.get("Отправлено")
-                def _is_sent_value(v):
-                    if isinstance(v, bool): return v
-                    return str(v).strip().lower() in ("true", "1", "yes", "да", "y", "sent", "ок", "ok", "✔", "✅")
-                if _is_sent_value(sent_flag):
-                    print(f"Skipping row {idx} because already sent")
-                    continue
-                if idx in processed_rows:
-                    print(f"Skipping row {idx} because already processed")
-                    continue
-                if not str(record.get("Имя", "")).strip():
-                    print(f"Skipping row {idx} because no name")
-                    continue
-                time_str = record.get("Время")
-                if not time_str:
-                    print(f"Skipping row {idx} because no time")
-                    continue
+        # Fetch all records from sheet
+        records = worksheet.get_all_records()  # this gives a list of dicts, excluding header
+        now = datetime.now(tz)
+        # Iterate with index to know which row to update (index 0 corresponds to sheet row 2, since row1 is header)
+        for idx, record in enumerate(records, start=2):  # start=2 to account for header row
+            sent_flag = record.get("Отправлено")  # could be boolean True/False or string "FALSE"/"TRUE"
+            # Normalize the sent flag to boolean
+            if sent_flag in [True, "TRUE", "True", "true"]:
+                sent = True
+            else:
+                sent = False
+            if sent:
+                continue  # skip already sent
+
+            # Skip the post entirely if the “Имя” cell is empty or whitespace
+            name_cell = record.get("Имя", "")
+            if not str(name_cell).strip():
+                continue
+
+            time_str = record.get("Время")
+            if not time_str:
+                continue
+            # Parse the scheduled time
+            try:
+                sched_time = datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S")
+            except Exception as e:
+                # If parsing fails, skip this entry
+                print(f"Failed to parse time for row {idx}: {time_str}")
+                continue
+            # Localize to Armenia timezone
+            sched_time = tz.localize(sched_time)
+            if sched_time <= now:
+                # Time to send this post
                 try:
-                    sched_time = tz.localize(datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S"))
+                    await send_post(record, idx)  # pass the record and actual sheet row index
                 except Exception as e:
-                    print(f"Failed to parse time for row {idx}: {time_str} - {e}")
-                    continue
-                print(f"Row {idx} sched_time: {sched_time}")
-                if sched_time <= now:
-                    print(f"Posting row {idx}")
-                    processed_rows.add(idx)
-                    await send_post(record, idx)
-                else:
-                    print(f"Skipping row {idx} because future time: {sched_time}")
-        except Exception as e:
-            print(f"An error occurred in the main loop: {e}")
-            print("Restarting loop after a short delay...")
+                    print(f"Error while sending post for row {idx}: {e}")
+        # Wait for the next cycle
         await asyncio.sleep(REFRESH_SECONDS)
+
 # Run the main loop
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
