@@ -2,7 +2,7 @@ import os
 import asyncio
 import base64
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import requests
 import io
@@ -29,7 +29,7 @@ TG3_API_ID = int(os.environ.get("TG3_API_ID", 0))
 TG3_API_HASH = os.environ.get("TG3_API_HASH")
 TG3_SESSION = os.environ.get("TG3_SESSION")
 TG3_CHANNEL = os.environ.get("TG3_CHANNEL")
-REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
+REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 60))
 
 # Parse Google service account credentials from the base64 JSON string
 credentials_json = json.loads(base64.b64decode(GOOGLE_CREDS_JSON)) if GOOGLE_CREDS_JSON else None
@@ -271,13 +271,21 @@ async def main():
                     continue
 
                 if sched_time <= now:
-                    try:
-                        worksheet.update_cell(idx, 1, "IN_PROGRESS")
-                    except Exception as e:
-                        print(f"Warning: failed to set IN_PROGRESS for row {idx}: {e}")
-                    
-                    processed_rows.add(idx)
-                    await send_post(record, idx)
+                    delta_sec = (now - sched_time).total_seconds()
+                    if delta_sec <= 300:  # Send only if within 5 minutes
+                        try:
+                            worksheet.update_cell(idx, 1, "IN_PROGRESS")
+                        except Exception as e:
+                            print(f"Warning: failed to set IN_PROGRESS for row {idx}: {e}")
+                        
+                        processed_rows.add(idx)
+                        await send_post(record, idx)
+                    else:
+                        try:
+                            worksheet.update_cell(idx, 1, "MISSED")
+                        except Exception as e:
+                            print(f"Warning: failed to set MISSED for row {idx}: {e}")
+                        processed_rows.add(idx)
 
         except Exception as e:
             print(f"An error occurred in the main loop: {e}")
