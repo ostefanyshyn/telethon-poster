@@ -40,6 +40,8 @@ worksheet = sheet.sheet1  # assuming data is in the first sheet
 
 # Timezone for parsing schedule times (Armenia)
 tz = pytz.timezone("Asia/Yerevan")
+# Avoid duplicate sends within a single runtime
+processed_rows = set()
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +251,6 @@ async def send_post(record, row_idx):
     file_urls = []
     for n in range(1, 5):
         url = None
-        # accept both capitalized and lowercase header spelling of «Ссылка»
         for key in (f"Ссылка {n}", f"ссылка {n}"):
             if key in record:
                 url = record.get(key)
@@ -259,34 +260,62 @@ async def send_post(record, row_idx):
             if u.startswith("http"):
                 file_urls.append(u)
 
-    # Download all media into raw bytes so each Telegram client gets its own BytesIO copy
-    photo_data = []  # list of (bytes, file_name)
+    # Download all media into raw bytes so each Telegram client gets its own BytesIO copy.
+    # Keep the ORIGINAL ORDER and allow mixed photo+video albums in one post.
+    media_items = []  # list of {"kind": "photo"|"video", "data": bytes, "name": str}
+
+    def _infer_kind_and_name(url, resp):
+        ct = (resp.headers.get("Content-Type") or "").lower()
+        name = url.split("/")[-1] or "file"
+        # add an extension from content-type if missing
+        if "." not in name:
+            if "video/" in ct:
+                ext = "mp4" if "mp4" in ct else ct.split("/", 1)[1].split(";", 1)[0]
+                name = f"{name}.{ext}"
+            elif "image/" in ct:
+                ext = ct.split("/", 1)[1].split(";", 1)[0]
+                name = f"{name}.{ext}"
+        lname = name.lower()
+        if any(lname.endswith(e) for e in (".mp4", ".mov", ".m4v", ".webm", ".mkv")) or "video/" in ct:
+            return "video", name
+        if any(lname.endswith(e) for e in (".jpg", ".jpeg", ".png", ".webp", ".gif")) or "image/" in ct:
+            return "photo", name
+        # default to photo so at least something is sent
+        return "photo", name
+
     if file_urls:
         for url in file_urls:
             try:
                 resp = requests.get(url)
                 resp.raise_for_status()
-                file_data = resp.content
-                file_name = url.split("/")[-1] or "file"
-                photo_data.append((file_data, file_name))
+                kind, file_name = _infer_kind_and_name(url, resp)
+                media_items.append({"kind": kind, "data": resp.content, "name": file_name})
             except Exception as e:
                 print(f"Warning: failed to download media {url} - {e}")
+
     # Send message (with media if available) via all three clients concurrently
     tasks = []
     # Determine target channels (convert to int if needed)
     channels = [TG1_CHANNEL, TG2_CHANNEL, TG3_CHANNEL]
-    # Convert channel IDs to int for Telethon if they look like integers
     channels = [int(ch) if ch and ch.isdigit() or (ch and ch.startswith("-")) else ch for ch in channels]
     # Prepare send tasks
     for client, channel in zip([client1, client2, client3], channels):
-        if photo_data:
-            # Re‑instantiate fresh BytesIO objects so each client gets independent streams
+        if media_items:
             file_objs = []
-            for data, fname in photo_data:
-                bio = io.BytesIO(data)
-                bio.name = fname
+            for item in media_items:
+                bio = io.BytesIO(item["data"])  # fresh BytesIO for each client
+                bio.name = item["name"]
                 file_objs.append(bio)
-            tasks.append(client.send_file(channel, file_objs, caption=message_html))
+            # One album with mixed media; caption will appear on the first item in the album
+            tasks.append(
+                client.send_file(
+                    channel,
+                    file_objs,
+                    caption=message_html,
+                    supports_streaming=True,   # ensure videos are treated as videos
+                    force_document=False       # let Telegram detect photo/video
+                )
+            )
         else:
             tasks.append(client.send_message(channel, message_html))
     # Run all send tasks concurrently
@@ -307,14 +336,15 @@ async def main():
         now = datetime.now(tz)
         # Iterate with index to know which row to update (index 0 corresponds to sheet row 2, since row1 is header)
         for idx, record in enumerate(records, start=2):  # start=2 to account for header row
-            sent_flag = record.get("Отправлено")  # could be boolean True/False or string "FALSE"/"TRUE"
-            # Normalize the sent flag to boolean
-            if sent_flag in [True, "TRUE", "True", "true"]:
-                sent = True
-            else:
-                sent = False
-            if sent:
-                continue  # skip already sent
+            sent_flag = record.get("Отправлено")  # could be boolean or string
+            def _is_sent_value(v):
+                if isinstance(v, bool):
+                    return v
+                s = str(v).strip().lower()
+                return s in ("true", "1", "yes", "да", "y", "sent", "in_progress", "ок", "ok", "✔", "✅")
+            sent = _is_sent_value(sent_flag)
+            if sent or idx in processed_rows:
+                continue  # skip already sent or already queued in this runtime
 
             # Skip the post entirely if the “Имя” cell is empty or whitespace
             name_cell = record.get("Имя", "")
@@ -336,6 +366,12 @@ async def main():
             if sched_time <= now:
                 # Time to send this post
                 try:
+                    # Optimistic lock to prevent duplicate posts across loops/instances
+                    try:
+                        worksheet.update_cell(idx, 1, "IN_PROGRESS")  # column A assumed for "Отправлено"
+                    except Exception as e:
+                        print(f"Warning: failed to set IN_PROGRESS for row {idx}: {e}")
+                    processed_rows.add(idx)
                     await send_post(record, idx)  # pass the record and actual sheet row index
                 except Exception as e:
                     print(f"Error while sending post for row {idx}: {e}")
