@@ -68,6 +68,7 @@ client3 = TelegramClient(StringSession(TG3_SESSION) if TG3_SESSION else 'tg3_ses
 # Custom HTML parser to convert <a href="emoji/{id}">X</a> into MessageEntityCustomEmoji
 from telethon.extensions import html as tl_html
 from telethon import types
+from telethon.tl.types import DocumentAttributeVideo
 
 class CustomHtml:
     @staticmethod
@@ -259,36 +260,69 @@ async def send_post(record, row_idx):
             if u.startswith("http"):
                 file_urls.append(u)
 
-    # Download all media into raw bytes so each Telegram client gets its own BytesIO copy
-    photo_data = []  # list of (bytes, file_name)
+    media_items = []  # list of dicts: {'data': bytes, 'name': str, 'attr': DocumentAttributeVideo|None}
     if file_urls:
         for url in file_urls:
             try:
                 resp = requests.get(url)
                 resp.raise_for_status()
-                file_data = resp.content
-                file_name = url.split("/")[-1] or "file"
-                photo_data.append((file_data, file_name))
+                data_bytes = resp.content
+                # derive filename and extension from URL (strip query) and fall back to Content-Type
+                base_name = url.split('/')[-1].split('?')[0] or 'file'
+                _, ext = os.path.splitext(base_name)
+                ext = (ext or '').lower()
+                if not ext:
+                    ctype = resp.headers.get('Content-Type', '').lower()
+                    if 'image/jpeg' in ctype:
+                        ext = '.jpg'
+                    elif 'image/png' in ctype:
+                        ext = '.png'
+                    elif 'image/gif' in ctype:
+                        ext = '.gif'
+                    elif 'video/mp4' in ctype or 'application/octet-stream' in ctype and base_name.lower().endswith('.mp4'):
+                        ext = '.mp4'
+                if ext and not base_name.lower().endswith(ext):
+                    base_name = base_name + ext
+                is_video = (ext == '.mp4')
+                attr = DocumentAttributeVideo(duration=0, w=0, h=0, supports_streaming=True) if is_video else None
+                media_items.append({'data': data_bytes, 'name': base_name, 'attr': attr})
             except Exception as e:
                 print(f"Warning: failed to download media {url} - {e}")
+
     # Send message (with media if available) via all three clients concurrently
     tasks = []
     # Determine target channels (convert to int if needed)
     channels = [TG1_CHANNEL, TG2_CHANNEL, TG3_CHANNEL]
-    # Convert channel IDs to int for Telethon if they look like integers
-    channels = [int(ch) if ch and ch.isdigit() or (ch and ch.startswith("-")) else ch for ch in channels]
+    # Convert channel IDs to int for Telethon if they look like integers or start with '-'
+    channels = [int(ch) if (isinstance(ch, str) and (ch.isdigit() or ch.startswith('-'))) else ch for ch in channels]
+
     # Prepare send tasks
     for client, channel in zip([client1, client2, client3], channels):
-        if photo_data:
-            # Re‑instantiate fresh BytesIO objects so each client gets independent streams
+        if media_items:
+            # Re‑instantiate fresh BytesIO objects so each client gets independent streams, and set per-file attributes
             file_objs = []
-            for data, fname in photo_data:
-                bio = io.BytesIO(data)
-                bio.name = fname
+            attributes = []
+            captions = []
+            for idx, item in enumerate(media_items):
+                bio = io.BytesIO(item['data'])
+                bio.name = item['name']
+                bio.seek(0)
                 file_objs.append(bio)
-            tasks.append(client.send_file(channel, file_objs, caption=message_html))
+                attributes.append(item['attr'])
+                captions.append(message_html if idx == 0 else "")
+            supports_streaming_flag = any(item['attr'] is not None for item in media_items)
+            tasks.append(
+                client.send_file(
+                    channel,
+                    file_objs,
+                    caption=captions,
+                    supports_streaming=supports_streaming_flag,
+                    attributes=attributes
+                )
+            )
         else:
             tasks.append(client.send_message(channel, message_html))
+
     # Run all send tasks concurrently
     await asyncio.gather(*tasks)
     # Update the Google Sheet to mark as sent (column A to TRUE)
