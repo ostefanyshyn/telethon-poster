@@ -93,6 +93,7 @@ emoji_placeholders = {
 }
 async def send_post(record, row_idx):
     """Send a post to all three channels based on the data in record (a dict)."""
+    print(f"Attempting to send post for row {row_idx}")
     status = record.get("Статус") or record.get("Cтатус") or ""
     name = record["Имя"]
     services = record["Услуги"]
@@ -148,6 +149,7 @@ async def send_post(record, row_idx):
         url = record.get(f"Ссылка {n}") or record.get(f"ссылка {n}")
         if isinstance(url, str) and url.strip().startswith("http"):
             file_urls.append(url.strip())
+    print(f"Media URLs for row {row_idx}: {file_urls}")
     # Download media and prepare BytesIO objects
     media_files = []
     if file_urls:
@@ -167,6 +169,7 @@ async def send_post(record, row_idx):
                 print(f"Warning: failed to download media {url} - {e}")
     async def send_to_channel(client, channel):
         """Sends the message or media group to a single channel."""
+        print(f"Sending to channel {channel}")
         if not media_files:
             await client.send_message(channel, message_html)
             return
@@ -179,10 +182,14 @@ async def send_post(record, row_idx):
         if channel:
             tasks.append(send_to_channel(client, channel))
     if tasks:
-        await asyncio.gather(*tasks)
-    # Update the Google Sheet to mark as sent
-    worksheet.update_cell(row_idx, 1, "TRUE")
-    print(f"Posted and marked row {row_idx} as sent.")
+        try:
+            await asyncio.gather(*tasks)
+            worksheet.update_cell(row_idx, 1, "TRUE")
+            print(f"Successfully posted and marked row {row_idx} as sent.")
+        except Exception as e:
+            print(f"Error sending post for row {row_idx}: {e}")
+    else:
+        print(f"No channels configured for row {row_idx}")
 async def main():
     """Main loop to connect clients and check the schedule."""
     await client1.start()
@@ -193,23 +200,37 @@ async def main():
         try:
             records = worksheet.get_all_records()
             now = datetime.now(tz)
+            print(f"Current time: {now}")
             for idx, record in enumerate(records, start=2):
                 sent_flag = record.get("Отправлено")
                 def _is_sent_value(v):
                     if isinstance(v, bool): return v
                     return str(v).strip().lower() in ("true", "1", "yes", "да", "y", "sent", "ок", "ok", "✔", "✅")
-                if _is_sent_value(sent_flag) or idx in processed_rows or not str(record.get("Имя", "")).strip():
+                if _is_sent_value(sent_flag):
+                    print(f"Skipping row {idx} because already sent")
+                    continue
+                if idx in processed_rows:
+                    print(f"Skipping row {idx} because already processed")
+                    continue
+                if not str(record.get("Имя", "")).strip():
+                    print(f"Skipping row {idx} because no name")
                     continue
                 time_str = record.get("Время")
-                if not time_str: continue
+                if not time_str:
+                    print(f"Skipping row {idx} because no time")
+                    continue
                 try:
                     sched_time = tz.localize(datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S"))
-                except Exception:
-                    print(f"Failed to parse time for row {idx}: {time_str}")
+                except Exception as e:
+                    print(f"Failed to parse time for row {idx}: {time_str} - {e}")
                     continue
+                print(f"Row {idx} sched_time: {sched_time}")
                 if sched_time <= now:
+                    print(f"Posting row {idx}")
                     processed_rows.add(idx)
                     await send_post(record, idx)
+                else:
+                    print(f"Skipping row {idx} because future time: {sched_time}")
         except Exception as e:
             print(f"An error occurred in the main loop: {e}")
             print("Restarting loop after a short delay...")
