@@ -12,6 +12,9 @@ from telethon.sessions import StringSession
 from telethon.extensions import html as tl_html
 from telethon import types
 from dotenv import load_dotenv
+import time
+import random
+from urllib.parse import urlparse, unquote
 
 # Загрузка переменных из .env файла
 load_dotenv()
@@ -58,8 +61,16 @@ except Exception as e:
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
 
+# --- СЕТЕВЫЕ НАСТРОЙКИ ДЛЯ ЗАГРУЗКИ МЕДИА ---
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+}
+DOWNLOAD_TIMEOUT = 20  # сек
+MAX_RETRIES = 3
+CHUNK_SIZE = 8192
+
 # Прокси для каждого аккаунта (если нужны)
-# Замените на ваши данные или оставьте None, если прокси не используются
+# Укажите свои данные или оставьте None, если прокси не используются
 proxy1 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
           'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n443-sesstime-90',
           'Qefmegpajkitdotxo7')
@@ -99,7 +110,7 @@ class CustomHtml:
 for _c in (client1, client2, client3):
     _c.parse_mode = CustomHtml()
 
-# ID кастомных эмодзи
+# ID кастомных эмодзи (может использоваться для вставки специальных эмодзи в текст)
 emoji_ids = {
     1: 5429293125518510398,
     2: 5814534640949530526,
@@ -112,19 +123,61 @@ emoji_ids = {
     9: 5460811944883660881
 }
 
-# Unicode-заменители для отображения в коде
+# Unicode-заменители для отображения в коде (если нужно показать эмодзи как символы)
 emoji_placeholders = {
     1: "☁️", 2: "👑", 3: "✅", 4: "✅", 5: "✅", 6: "✅", 7: "✅", 8: "⚡️", 9: "😜"
 }
 
+def _choose_filename(url, resp, fallback_name):
+    """Определяет имя файла по заголовку ответа или URL."""
+    cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
+    if cd and "filename=" in cd:
+        fname = cd.split("filename=", 1)[1].strip().strip('";\'')
+        if fname:
+            return fname
+    path = urlparse(url).path
+    if path:
+        last = os.path.basename(path)
+        if last:
+            return unquote(last.split("?")[0])
+    return fallback_name
+
+def download_file_with_retries(url, kind):
+    """Скачивает файл с повторами. kind: 'photo' или 'video'. Возвращает (bytes, filename)."""
+    default_name = "image.jpg" if kind == "photo" else "video.mp4"
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                url,
+                headers=DEFAULT_HEADERS,
+                stream=True,
+                timeout=DOWNLOAD_TIMEOUT,
+                allow_redirects=True,
+            )
+            resp.raise_for_status()
+            fname = _choose_filename(url, resp, default_name)
+            bio = io.BytesIO()
+            for chunk in resp.iter_content(CHUNK_SIZE):
+                if chunk:
+                    bio.write(chunk)
+            return bio.getvalue(), fname
+        except Exception as e:
+            last_err = e
+            wait = min(2 ** (attempt - 1) + random.random(), 5)
+            print(
+                f"ПРЕДУПРЕЖДЕНИЕ: ошибка загрузки {kind} {url} (попытка {attempt}/{MAX_RETRIES}): {e}. Повтор через {wait:.1f}с"
+            )
+            time.sleep(wait)
+    raise last_err
+
 # --- 4. ФУНКЦИЯ ОТПРАВКИ ПОСТА ---
 
 async def send_post(record, row_idx):
-    """Собирает, форматирует и отправляет пост, поддерживая фото и видео."""
-    # --- Парсинг данных из записи (этот блок без изменений) ---
+    """Собирает, форматирует и отправляет пост (фото+видео+текст), поддерживая фото и видео."""
+    # Парсинг данных из записи (из столбцов таблицы Google Sheets)
     status = record.get("Статус", "")
     name = record.get("Имя", "")
-    # ... (весь остальной парсинг ваших полей остается здесь)
     services = record.get("Услуги", "")
     extra_services = record.get("Доп. услуги", "")
     age = record.get("Возраст", "")
@@ -137,22 +190,38 @@ async def send_post(record, row_idx):
     whatsapp_link = record.get("WhatsApp", "")
     skip_text = record.get("Пробелы перед короной", "")
     
-    # --- Сборка HTML-сообщения (этот блок без изменений) ---
-    message_html = "\n".join([
-        # ... (вся ваша логика сборки message_html_lines остается здесь)
-    ])
+    # Сборка HTML-сообщения (формируем текст поста из данных записи)
+    message_html_lines = [
+        # Здесь формируем список строк с информацией (имя, услуги, возраст и т.д.)
+        # Например:
+        f"<b>{name}</b>",
+        f"{services}" + (f", {extra_services}" if extra_services else ""),
+        f"Возраст: {age}, Рост: {height}, Вес: {weight}, Грудь: {bust}",
+        f"Express: {express_price}, Incall: {incall_price}, Outcall: {outcall_price}",
+    ]
+    # Добавляем ссылку WhatsApp, если указана
+    if whatsapp_link:
+        message_html_lines.append(f'<a href="{whatsapp_link}">WhatsApp</a>')
+    # Если нужно добавить пробелы перед эмодзи короны (skip_text содержит, например, символы пробела)
+    if skip_text:
+        message_html_lines.append(skip_text)
+    # Добавляем эмодзи короны (id=2 соответствует "👑" из emoji_placeholders)
+    crown_placeholder = emoji_placeholders.get(2, "")
+    if crown_placeholder:
+        message_html_lines.append(crown_placeholder)
 
-    # --- 📸 ИЗМЕНЕНИЕ: Разделение фото и видео ---
-    photo_column_headers = ["Ссылка 1", "Ссылка 2", "Ссылка 3", "Ссылка 4", "Ссылка 5", "Ссылка 6", "Ссылка 7", "Ссылка 8", "Ссылка 9", "Ссылка 10"]
-    video_extensions = ['.mp4', '.mov', '.avi', '.mkv'] # Список расширений видео
+    # Объединяем все строки в одно HTML сообщение с переводами строк
+    message_html = "\n".join(message_html_lines)
+
+    # --- Разделение фото и видео по ссылкам ---
+    photo_column_headers = [f"Ссылка {i}" for i in range(1, 11)]  # Ссылка 1 ... Ссылка 10
+    video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v']  # Расширения, считающиеся видео
     
     photo_urls = []
     video_urls = []
-
     for header in photo_column_headers:
         url = record.get(header)
         if url and isinstance(url, str) and url.startswith("http"):
-            # Проверяем URL на расширения видео
             if any(url.lower().endswith(ext) for ext in video_extensions):
                 video_urls.append(url)
             else:
@@ -160,91 +229,104 @@ async def send_post(record, row_idx):
     
     print(f"Найдено {len(photo_urls)} фото и {len(video_urls)} видео для строки {row_idx}.")
 
-    # Загрузка данных
+    # Загрузка данных фото
     photo_data = []
     for url in photo_urls:
         try:
-            # ... (логика загрузки как раньше)
-            resp = requests.get(url)
-            resp.raise_for_status()
-            photo_data.append((resp.content, url.split("/")[-1].split("?")[0] or "image.jpg"))
+            content, fname = download_file_with_retries(url, 'photo')
+            photo_data.append((content, fname))
         except Exception as e:
             print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить фото {url} - {e}")
 
+    # Загрузка данных видео
     video_data = []
     for url in video_urls:
         try:
-            # ... (логика загрузки как раньше)
-            resp = requests.get(url)
-            resp.raise_for_status()
-            video_data.append((resp.content, url.split("/")[-1].split("?")[0] or "video.mp4"))
+            content, fname = download_file_with_retries(url, 'video')
+            video_data.append((content, fname))
         except Exception as e:
             print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить видео {url} - {e}")
 
-    # --- 📤 ИЗМЕНЕНИЕ: Новая логика отправки ---
+    # --- Отправка медиа (фото + видео) одним альбомом ---
     tasks = []
     clients_with_channels = [(client1, TG1_CHANNEL), (client2, TG2_CHANNEL), (client3, TG3_CHANNEL)]
-
     for client, channel_str in clients_with_channels:
         if not (client.is_connected() and channel_str):
             continue
-        
         try:
+            # Определяем идентификатор канала (int ID или строковый username)
             channel = int(channel_str)
         except (ValueError, TypeError):
             channel = channel_str
-        
-        # Создаем асинхронную подзадачу для каждого клиента
+        # Создаём задачу отправки поста для каждого подключенного клиента
         tasks.append(send_media_for_client(client, channel, message_html, photo_data, video_data))
-
+    # Выполняем отправку для всех клиентов параллельно
     if tasks:
-        sent_messages = await asyncio.gather(*tasks)
-        # Проверяем, что хотя бы одна отправка была успешной (не None)
-        if any(sent_messages):
+        sent_messages = await asyncio.gather(*tasks, return_exceptions=True)
+        # Проверяем, что хотя бы одна отправка была успешной (не None и без исключения)
+        success = False
+        for result in sent_messages:
+            if isinstance(result, Exception):
+                # Логируем исключения, если произошли
+                print(f"Ошибка при отправке через одного из клиентов: {result}")
+            elif result:  # результат не None
+                success = True
+        if success:
+            # Отмечаем в таблице, что сообщение отправлено (колонка "Отправлено" установится в TRUE)
             worksheet.update_cell(row_idx, 1, "TRUE")
             print(f"Сообщение для строки {row_idx} отправлено и отмечено как отправленное.")
     else:
-        print(f"Для строки {row_idx} не было найдено активных каналов для отправки.")
+        print(f"Для строки {row_idx} не подключено ни одного Telegram-клиента для отправки.")
 
 async def send_media_for_client(client, channel, caption, photo_data, video_data):
-    """Отправляет медиа для одного клиента, управляя ответами."""
-    last_message = None
-    
-    # 1. Отправляем фотоальбом с подписью
-    if photo_data:
-        file_objs = [io.BytesIO(data) for data, fname in photo_data]
-        for bio, (_, fname) in zip(file_objs, photo_data):
-            bio.name = fname
-        
-        # Отправляем альбом и сохраняем сообщение
-        sent_album = await client.send_file(channel, file_objs, caption=caption)
-        last_message = sent_album[0] if isinstance(sent_album, list) else sent_album
+    """Отправляет фото+видео как один медиапост (альбом) с общей подписью.
+       Если медиа больше 10, отправляет последующие файлы ответом на первое сообщение."""
+    all_media = photo_data + video_data
+    # Если нет медиа, но есть только текст, отправляем просто текстовое сообщение
+    if not all_media:
+        if caption:
+            return await client.send_message(channel, caption)
+        return None
 
-    # 2. Если фото не было, отправляем текст, чтобы было на что отвечать
-    elif caption and not video_data: # Отправляем текст только если нет и видео
-        last_message = await client.send_message(channel, caption)
-        
-    # 3. Отправляем видео
-    if video_data:
-        # Если не было фото, но есть видео, отправляем подпись с первым видео
-        if not photo_data:
-            first_video_content, first_video_name = video_data.pop(0)
-            bio = io.BytesIO(first_video_content)
-            bio.name = first_video_name
-            last_message = await client.send_file(channel, bio, caption=caption)
+    first_message = None
+    prev_message = None
 
-        # Отправляем остальные видео в ответ на предыдущее сообщение
-        for content, name in video_data:
+    # Отправляем медиа группами по 10 (лимит альбома Telegram)
+    for i in range(0, len(all_media), 10):
+        chunk = all_media[i:i + 10]
+        file_objs = []
+        for content, name in chunk:
             bio = io.BytesIO(content)
-            bio.name = name
-            last_message = await client.send_file(channel, bio, reply_to=last_message.id)
-            
-    return last_message
+            bio.name = name  # Сохраняем имя файла для корректного определения типа (фото/видео)
+            file_objs.append(bio)
+        # Для первой группы указываем подпись только для первого файла
+        if i == 0 and caption:
+            # Формируем список подписей: первая с текстом, остальные пустые
+            captions = [caption] + [""] * (len(file_objs) - 1)
+        else:
+            captions = None
+        # Отправляем группу файлов (альбом). Если это не первая группа, отвечаем на предыдущее сообщение (reply_to).
+        sent = await client.send_file(
+            channel,
+            file_objs,
+            caption=captions,
+            reply_to=prev_message.id if (i > 0 and prev_message) else None,
+        )
+        # send_file возвращает список сообщений (List[Message]) для альбома или единственный Message
+        if isinstance(sent, list):
+            msg = sent[0]  # Первый медиа-элемент несёт общую подпись
+        else:
+            msg = sent
+        # Сохраняем первое сообщение альбома
+        if first_message is None:
+            first_message = msg
+        prev_message = msg  # Для следующей группы задаём reply_to на последнее отправленное сообщение
+    return first_message
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
 async def main():
-    """Главная функция: подключается к клиентам и запускает бесконечный цикл проверки."""
+    """Главная функция: подключается к клиентам и запускает бесконечный цикл проверки таблицы."""
     clients = [c for c in [client1, client2, client3] if c.api_id and c.api_hash]
     if not clients:
         print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте переменные TG_API_ID и TG_API_HASH.")
@@ -259,34 +341,26 @@ async def main():
             print(f"Проверка таблицы... {datetime.now(tz).strftime('%H:%M:%S')}")
             records = worksheet.get_all_records()
             now = datetime.now(tz)
-
-            for idx, record in enumerate(records, start=2):
+            for idx, record in enumerate(records, start=2):  # начиная со 2-й строки (первая строка - заголовки)
                 sent_flag = record.get("Отправлено")
                 if str(sent_flag).upper() == "TRUE":
-                    continue
-
+                    continue  # Пропускаем уже отправленные записи
                 if not str(record.get("Имя", "")).strip():
-                    continue
-
+                    continue  # Пропускаем пустые строки (без имени, считаем запись неполной)
                 time_str = record.get("Время")
                 if not time_str:
-                    continue
-
+                    continue  # Если не указано время, пропускаем
                 try:
-                    sched_time = datetime.strptime(time_str, "%d.%m.%Y %H:%M:%S")
+                    sched_time = datetime.strptime(time_str, "%d.%m.%Y %H:%М:%S")
                     sched_time = tz.localize(sched_time)
-
                     if sched_time <= now:
-                        print(f"Найдена запись для отправки в строке {idx}.")
+                        print(f"Найдена запись для отправки (строка {idx}). Отправляем пост...")
                         await send_post(record, idx)
-
                 except ValueError:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: Неверный формат времени в строке {idx}: '{time_str}'. Ожидается 'ДД.ММ.ГГГГ ЧЧ:ММ:СС'.")
                 except Exception as e:
                     print(f"ОШИБКА при обработке строки {idx}: {e}")
-            
             await asyncio.sleep(REFRESH_SECONDS)
-
         except gspread.exceptions.APIError as e:
             print(f"ОШИБКА API Google Sheets: {e}. Повторная попытка через {REFRESH_SECONDS} сек.")
             await asyncio.sleep(REFRESH_SECONDS)
