@@ -205,16 +205,7 @@ async def send_post(record, row_idx):
 
     # ─── формируем блок «Цена» динамически ───
     def _fmt_price(val):
-        """
-        Convert cell value to '<value>.000 AMD' style.
-        If conversion fails, return the raw string with ' AMD' suffix.
-        """
-        try:
-            num = float(str(val).replace(",", "."))
-            # show always three decimals, e.g. 40.000
-            return f"{num:.3f} AMD"
-        except Exception:
-            return f"{val} AMD"
+        return f"{val} AMD"
 
     price_lines = []
     if express_price and str(express_price).strip():
@@ -256,7 +247,7 @@ async def send_post(record, row_idx):
             file_count = int(val)
     # Get the photo URLs from Q, R, S, T (we have them in record if get_all_records is used, likely as keys or we use indices)
     # The CSV header shows Photo URLs under keys 'Фото 1', 'Фото 2', etc., we need to match correctly.
-    photo_keys = [k for k in record.keys() if k.startswith("Фото ") or k.startswith("Photo")]
+    photo_keys = [k for k in record.keys() if k.startswith("Ссылка ")]
     # Sort the keys to ensure order (Фото 1, Фото 2, ...)
     photo_keys.sort()
     photo_urls = []
