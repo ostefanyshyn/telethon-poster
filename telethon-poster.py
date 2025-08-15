@@ -249,7 +249,8 @@ async def main():
     while True:
         try:
             print(f"Проверка таблицы... {datetime.now(tz).strftime('%H:%M:%S')}")
-            records = worksheet.get_all_records()
+            # Force gspread to keep displayed cell strings (e.g. "40.000") and avoid numeric conversion.
+            records = worksheet.get_all_records(value_render_option='FORMATTED_VALUE', numericise_data=False)
             now = datetime.now(tz)
 
             for idx, record in enumerate(records, start=2):
