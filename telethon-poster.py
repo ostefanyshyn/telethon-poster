@@ -12,7 +12,6 @@ from telethon.sessions import StringSession
 from telethon.extensions import html as tl_html
 from telethon import types
 from dotenv import load_dotenv
-from urllib.parse import urlparse, parse_qs
 
 # Загрузка переменных из .env файла
 load_dotenv()
@@ -60,33 +59,16 @@ except Exception as e:
 tz = pytz.timezone("Asia/Yerevan")
 
 # Прокси для каждого аккаунта (если нужны)
-# Читаем из переменных окружения TG1_PROXY, TG2_PROXY, TG3_PROXY в формате URL, например:
-#   socks5://user:pass@as.proxy.piaproxy.com:5000?rdns=1
-# username/password и параметр rdns можно опустить.
-
-def _parse_proxy(url: str):
-    if not url:
-        return None
-    try:
-        u = urlparse(url)
-        scheme = (u.scheme or '').lower()  # 'socks5', 'http', и т.п.
-        host = u.hostname
-        port = int(u.port) if u.port else None
-        username = u.username
-        password = u.password
-        qs = parse_qs(u.query or '')
-        rdns_val = qs.get('rdns', ['1'])[0]  # по умолчанию True
-        rdns_bool = str(rdns_val).lower() in ('1', 'true', 'yes', 'y')
-        if not (scheme and host and port):
-            return None
-        # Формат, совместимый с Telethon/PySocks: (тип, хост, порт, rdns, user, pass)
-        return (scheme, host, port, rdns_bool, username, password)
-    except Exception:
-        return None
-
-proxy1 = _parse_proxy(os.environ.get("TG1_PROXY"))
-proxy2 = _parse_proxy(os.environ.get("TG2_PROXY"))
-proxy3 = _parse_proxy(os.environ.get("TG3_PROXY"))
+# Замените на ваши данные или оставьте None, если прокси не используются
+proxy1 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n443-sesstime-90',
+          'Qefmegpajkitdotxo7')
+proxy2 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n444-sesstime-90',
+          'Qefmegpajkitdotxo7')
+proxy3 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
+          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n445-sesstime-90',
+          'Qefmegpajkitdotxo7')
 
 # Настройка клиентов Telegram
 client1 = TelegramClient(StringSession(TG1_SESSION) if TG1_SESSION else 'tg1_session', TG1_API_ID, TG1_API_HASH, proxy=proxy1)
