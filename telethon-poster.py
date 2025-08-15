@@ -7,14 +7,22 @@ import pytz
 import requests
 import io
 import gspread
+import sys
+from telethon.network import connection as tl_connection
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.extensions import html as tl_html
 from telethon import types
+import telethon.errors as tl_errors
 from dotenv import load_dotenv
 
 # Загрузка переменных из .env файла
 load_dotenv()
+
+# Предупреждение о версии Python (Telethon может работать нестабильно на Python 3.13)
+if sys.version_info >= (3, 13):
+    print("ПРЕДУПРЕЖДЕНИЕ: Обнаружен Python 3.13+. Известны проблемы совместимости asyncio с Telethon. "
+          "Рекомендуется использовать Python 3.11–3.12 или обновить Telethon до последней версии.")
 
 # --- 1. КОНФИГУРАЦИЯ ---
 
@@ -99,7 +107,19 @@ clients = []
 for i, acc in enumerate(accounts):
     prx = acc.get("proxy")
     session_or_name = StringSession(acc["session"]) if acc["session"] else f"tg{i+1}_session"
-    clients.append(TelegramClient(session_or_name, acc["api_id"], acc["api_hash"], proxy=prx))
+    clients.append(
+        TelegramClient(
+            session_or_name,
+            acc["api_id"],
+            acc["api_hash"],
+            proxy=prx,
+            connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
+            request_retries=3,
+            connection_retries=1,
+            retry_delay=2,
+            timeout=30,
+        )
+    )
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР ---
 
@@ -219,7 +239,7 @@ async def send_post(record, row_idx):
     if photo_urls:
         for url in photo_urls:
             try:
-                resp = requests.get(url)
+                resp = requests.get(url, timeout=20)
                 resp.raise_for_status()
                 file_data = resp.content
                 file_name = url.split("/")[-1].split("?")[0] or "image.jpg"
@@ -227,33 +247,70 @@ async def send_post(record, row_idx):
             except Exception as e:
                 print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить изображение {url} - {e}")
     
-    # Отправка сообщений
-    tasks = []
+    # Отправка сообщений — по одному клиенту, без совместного использования одних и тех же BytesIO
     clients_with_channels = [(c, acc.get("channel")) for c, acc in zip(clients, accounts)]
 
+    sent_any = False
     for client, channel_str in clients_with_channels:
-        if not (client.is_connected() and channel_str):
+        if not channel_str:
             continue
-        
+
+        # Гарантируем подключение клиента (переподключаем при необходимости)
+        try:
+            if not client.is_connected():
+                await client.connect()
+        except Exception as e:
+            print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось подключить клиента перед отправкой: {e}")
+            continue
+
         try:
             channel = int(channel_str)
         except (ValueError, TypeError):
             channel = channel_str
 
-        if photo_data:
-            file_objs = [io.BytesIO(data) for data, fname in photo_data]
-            for bio, (_, fname) in zip(file_objs, photo_data):
-                bio.name = fname
-            tasks.append(client.send_file(channel, file_objs, caption=message_html))
-        else:
-            tasks.append(client.send_message(channel, message_html))
+        try:
+            if photo_data:
+                # создаём свежие BytesIO на каждого клиента, чтобы не делить один и тот же буфер
+                file_objs = []
+                for data, fname in photo_data:
+                    bio = io.BytesIO(data)
+                    bio.name = fname
+                    file_objs.append(bio)
+                await client.send_file(channel, file_objs, caption=message_html)
+            else:
+                await client.send_message(channel, message_html)
+            sent_any = True
+            # Небольшая пауза, чтобы снизить одновременные запросы ко всем прокси
+            await asyncio.sleep(0.5)
+        except (tl_errors.FloodWaitError, tl_errors.SlowModeWaitError) as e:
+            print(f"ОШИБКА: ограничение Telegram при отправке: {e}. Пропуск для этого клиента.")
+        except Exception as e:
+            # Попытка одноразового переподключения и повторной отправки
+            print(f"ПРЕДУПРЕЖДЕНИЕ: ошибка при отправке через клиента: {e}. Пробуем переподключиться и повторить...")
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            try:
+                await client.connect()
+                if photo_data:
+                    file_objs = []
+                    for data, fname in photo_data:
+                        bio = io.BytesIO(data)
+                        bio.name = fname
+                        file_objs.append(bio)
+                    await client.send_file(channel, file_objs, caption=message_html)
+                else:
+                    await client.send_message(channel, message_html)
+                sent_any = True
+            except Exception as e2:
+                print(f"ОШИБКА: повторная отправка не удалась: {e2}")
 
-    if tasks:
-        await asyncio.gather(*tasks)
+    if sent_any:
         worksheet.update_cell(row_idx, 1, "TRUE")
         print(f"Сообщение для строки {row_idx} отправлено и отмечено как отправленное.")
     else:
-        print(f"Для строки {row_idx} не было найдено активных каналов для отправки.")
+        print(f"Для строки {row_idx} не удалось отправить сообщение ни через один настроенный клиент.")
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
@@ -264,11 +321,16 @@ async def main():
         return
         
     print("Подключение Telegram клиентов...")
-    await asyncio.gather(*(c.start() for c in clients))
+    results = await asyncio.gather(*(c.start() for c in clients), return_exceptions=True)
+    for idx, res in enumerate(results, start=1):
+        if isinstance(res, Exception):
+            print(f"ПРЕДУПРЕЖДЕНИЕ: клиент #{idx} не запустился: {res}")
     print("Клиенты успешно подключены. Запуск основного цикла...")
 
     while True:
         try:
+            alive = sum(1 for c in clients if c.is_connected())
+            print(f"Активных клиентов: {alive}/{len(clients)}")
             print(f"Проверка таблицы... {datetime.now(tz).strftime('%H:%M:%S')}")
             records = worksheet.get_all_records()
             now = datetime.now(tz)
