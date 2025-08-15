@@ -22,23 +22,20 @@ load_dotenv()
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON")
 
-# Telegram Аккаунт 1
-TG1_API_ID = int(os.environ.get("TG1_API_ID", 0))
-TG1_API_HASH = os.environ.get("TG1_API_HASH")
-TG1_SESSION = os.environ.get("TG1_SESSION")
-TG1_CHANNEL = os.environ.get("TG1_CHANNEL")
-
-# Telegram Аккаунт 2
-TG2_API_ID = int(os.environ.get("TG2_API_ID", 0))
-TG2_API_HASH = os.environ.get("TG2_API_HASH")
-TG2_SESSION = os.environ.get("TG2_SESSION")
-TG2_CHANNEL = os.environ.get("TG2_CHANNEL")
-
-# Telegram Аккаунт 3
-TG3_API_ID = int(os.environ.get("TG3_API_ID", 0))
-TG3_API_HASH = os.environ.get("TG3_API_HASH")
-TG3_SESSION = os.environ.get("TG3_SESSION")
-TG3_CHANNEL = os.environ.get("TG3_CHANNEL")
+# Telegram аккаунты: читаем TG{n}_* циклом из окружения
+accounts = []
+for n in range(1, 21):
+    api_id_str = os.environ.get(f"TG{n}_API_ID")
+    api_hash = os.environ.get(f"TG{n}_API_HASH")
+    session = os.environ.get(f"TG{n}_SESSION")
+    channel = os.environ.get(f"TG{n}_CHANNEL")
+    if not api_id_str or not api_hash:
+        continue
+    try:
+        api_id = int(api_id_str)
+    except Exception:
+        api_id = 0
+    accounts.append({"api_id": api_id, "api_hash": api_hash, "session": session, "channel": channel})
 
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
@@ -70,10 +67,12 @@ proxy3 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
           'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n445-sesstime-90',
           'Qefmegpajkitdotxo7')
 
-# Настройка клиентов Telegram
-client1 = TelegramClient(StringSession(TG1_SESSION) if TG1_SESSION else 'tg1_session', TG1_API_ID, TG1_API_HASH, proxy=proxy1)
-client2 = TelegramClient(StringSession(TG2_SESSION) if TG2_SESSION else 'tg2_session', TG2_API_ID, TG2_API_HASH, proxy=proxy2)
-client3 = TelegramClient(StringSession(TG3_SESSION) if TG3_SESSION else 'tg3_session', TG3_API_ID, TG3_API_HASH, proxy=proxy3)
+# Настройка клиентов Telegram (динамически)
+clients = []
+for i, acc in enumerate(accounts):
+    prx = proxy1 if i == 0 else proxy2 if i == 1 else proxy3 if i == 2 else None
+    session_or_name = StringSession(acc["session"]) if acc["session"] else f"tg{i+1}_session"
+    clients.append(TelegramClient(session_or_name, acc["api_id"], acc["api_hash"], proxy=prx))
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР ---
 
@@ -96,7 +95,7 @@ class CustomHtml:
         return tl_html.unparse(text, entities)
 
 # Установка парсера для всех клиентов
-for _c in (client1, client2, client3):
+for _c in clients:
     _c.parse_mode = CustomHtml()
 
 # ID кастомных эмодзи
@@ -203,11 +202,7 @@ async def send_post(record, row_idx):
     
     # Отправка сообщений
     tasks = []
-    clients_with_channels = [
-        (client1, TG1_CHANNEL),
-        (client2, TG2_CHANNEL),
-        (client3, TG3_CHANNEL)
-    ]
+    clients_with_channels = [(c, acc.get("channel")) for c, acc in zip(clients, accounts)]
 
     for client, channel_str in clients_with_channels:
         if not (client.is_connected() and channel_str):
@@ -237,9 +232,8 @@ async def send_post(record, row_idx):
 
 async def main():
     """Главная функция: подключается к клиентам и запускает бесконечный цикл проверки."""
-    clients = [c for c in [client1, client2, client3] if c.api_id and c.api_hash]
     if not clients:
-        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте переменные TG_API_ID и TG_API_HASH.")
+        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте переменные TG{n}_API_ID и TG{n}_API_HASH.")
         return
         
     print("Подключение Telegram клиентов...")
