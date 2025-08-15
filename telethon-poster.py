@@ -29,13 +29,52 @@ for n in range(1, 21):
     api_hash = os.environ.get(f"TG{n}_API_HASH")
     session = os.environ.get(f"TG{n}_SESSION")
     channel = os.environ.get(f"TG{n}_CHANNEL")
+
+    # Параметры прокси для этого аккаунта (опционально)
+    p_type = os.environ.get(f"TG{n}_PROXY_TYPE")      # например: 'socks5' или 'http'
+    host = os.environ.get(f"TG{n}_PROXY_HOST")
+    port_str = os.environ.get(f"TG{n}_PROXY_PORT")
+    rdns_str = os.environ.get(f"TG{n}_PROXY_RDNS", "true")
+    user = os.environ.get(f"TG{n}_PROXY_USER")
+    password = os.environ.get(f"TG{n}_PROXY_PASS")
+
     if not api_id_str or not api_hash:
         continue
     try:
         api_id = int(api_id_str)
     except Exception:
         api_id = 0
-    accounts.append({"api_id": api_id, "api_hash": api_hash, "session": session, "channel": channel})
+
+    # Сборка кортежа прокси, если задан
+    proxy = None
+    if p_type and host and port_str:
+        try:
+            port = int(port_str)
+        except Exception:
+            port = None
+        if port:
+            rdns = str(rdns_str).lower() in ("1", "true", "yes", "y", "on")
+            proxy = (p_type, host, port, rdns, user, password)
+
+    accounts.append({
+        "index": n,
+        "api_id": api_id,
+        "api_hash": api_hash,
+        "session": session,
+        "channel": channel,
+        "proxy": proxy,
+    })
+
+# Требуем наличие прокси для каждого аккаунта. Без прокси работать запрещено.
+missing_proxy = [acc["index"] for acc in accounts if not acc.get("proxy")]
+if missing_proxy:
+    acc_list = ", ".join(f"TG{n}" for n in missing_proxy)
+    print(
+        f"ОШИБКА: Для {acc_list} не задан прокси. "
+        f"Укажите TG{{n}}_PROXY_TYPE, TG{{n}}_PROXY_HOST, TG{{n}}_PROXY_PORT "
+        f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS)."
+    )
+    exit(1)
 
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
@@ -55,22 +94,10 @@ except Exception as e:
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
 
-# Прокси для каждого аккаунта (если нужны)
-# Замените на ваши данные или оставьте None, если прокси не используются
-proxy1 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n443-sesstime-90',
-          'Qefmegpajkitdotxo7')
-proxy2 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n444-sesstime-90',
-          'Qefmegpajkitdotxo7')
-proxy3 = ('socks5', 'as.proxy.piaproxy.com', 5000, True,
-          'user-subaccount_O9xrM-region-bd-sessid-bddtfx89d4fs5n445-sesstime-90',
-          'Qefmegpajkitdotxo7')
-
 # Настройка клиентов Telegram (динамически)
 clients = []
 for i, acc in enumerate(accounts):
-    prx = proxy1 if i == 0 else proxy2 if i == 1 else proxy3 if i == 2 else None
+    prx = acc.get("proxy")
     session_or_name = StringSession(acc["session"]) if acc["session"] else f"tg{i+1}_session"
     clients.append(TelegramClient(session_or_name, acc["api_id"], acc["api_hash"], proxy=prx))
 
