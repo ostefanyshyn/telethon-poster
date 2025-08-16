@@ -212,7 +212,17 @@ async def send_post(record, row_idx):
         message_html_lines.append("Параметры:")
         message_html_lines.append(f'<b><i>{"\n".join(param_lines)}</i></b>')
         message_html_lines.append("")
-    def _fmt_price(val): return f"{val} AMD"
+    def _fmt_price(val):
+        try:
+            # Normalize input like '40,5' to '40.5' and remove spaces
+            num = float(str(val).replace(' ', '').replace(',', '.'))
+            # Treat input as thousands of AMD (e.g., 40.0 -> 40000)
+            amount = int(round(num * 1000))
+            # Format with dot as thousands separator
+            return f"{format(amount, ',d').replace(',', '.')} AMD"
+        except Exception:
+            # Fallback to raw value if parsing fails
+            return f"{val} AMD"
     price_lines = []
     if express_price and str(express_price).strip(): price_lines.append(f"Express - {_fmt_price(express_price)}")
     if incall_price and str(incall_price).strip(): price_lines.append(f"Incall - {_fmt_price(incall_price)}")
