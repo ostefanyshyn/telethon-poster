@@ -155,12 +155,14 @@ emoji_ids = {
     6: 5373338978780979795,
     7: 5372991528811635071,
     8: 5364098734600762220,
-    9: 5460811944883660881
+    9: 5460811944883660881,
+    10: 5460675841665019102,
 }
 
 # Unicode-заменители для отображения в коде
 emoji_placeholders = {
-    1: "☁️", 2: "👑", 3: "✅", 4: "✅", 5: "✅", 6: "✅", 7: "✅", 8: "⚡️", 9: "😜"
+    1: "☁️", 2: "👑", 3: "✅", 4: "✅", 5: "✅", 6: "✅", 7: "✅", 8: "⚡️", 9: "😜",
+    10: "✈️"
 }
 
 # --- 4. ФУНКЦИЯ ОТПРАВКИ ПОСТА ---
@@ -180,6 +182,7 @@ async def send_post(record, row_idx):
     incall_price = record.get("Incall", "")
     outcall_price = record.get("Outcall", "")
     whatsapp_link = record.get("WhatsApp", "")
+    telegram_link = record.get("Telegram", "")
     skip_text = record.get("Пробелы перед короной", "")
 
     # Сборка HTML-сообщения
@@ -232,7 +235,9 @@ async def send_post(record, row_idx):
         message_html_lines.append(f'<b><i>{"\n".join(price_lines)}</i></b>')
         message_html_lines.append("")
     message_html_lines.append(f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a><b><i>Назначь встречу уже сегодня!</i></b><a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>')
-    message_html_lines.append(f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a> <a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>')
+    if telegram_link and str(telegram_link).strip():
+        message_html_lines.append(f'<a href="emoji/{emoji_ids[10]}">{emoji_placeholders[10]}</a> <a href="{telegram_link}"><b>Связь в Telegram</b></a>')
+    message_html_lines.append(f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a> <a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a>')
     message_html = "\n".join(message_html_lines)
 
     # Поиск и загрузка фотографий
