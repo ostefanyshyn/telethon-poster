@@ -194,7 +194,7 @@ async def send_post(record, row_idx):
     
     message_html_lines = []
     if skip_text and skip_text.strip(): message_html_lines.append(skip_text)
-    message_html_lines.append(f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a><i>{status}</i><a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>')
+    message_html_lines.append(f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a> <i>{status}</i> <a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>')
     message_html_lines.append("")
     prefix = f"{skip_text}" if skip_text else ""
     message_html_lines.append(f'{prefix}<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>')
