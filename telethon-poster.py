@@ -240,33 +240,53 @@ async def send_post(record, row_idx):
     message_html_lines.append(f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a> <a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a>')
     message_html = "\n".join(message_html_lines)
 
-    # Поиск и загрузка фотографий
-    photo_column_headers = ["Ссылка 1", "Ссылка 2", "Ссылка 3", "Ссылка 4", "Ссылка 5", "Ссылка 6", "Ссылка 7", "Ссылка 8", "Ссылка 9", "Ссылка 10"]
-    photo_urls = []
-    for header in photo_column_headers:
+    # Поиск и загрузка медиа (фото и видео)
+    media_column_headers = ["Ссылка 1", "Ссылка 2", "Ссылка 3", "Ссылка 4", "Ссылка 5", "Ссылка 6", "Ссылка 7", "Ссылка 8", "Ссылка 9", "Ссылка 10"]
+    media_urls = []
+    for header in media_column_headers:
         url = record.get(header)
         if url and isinstance(url, str) and url.startswith("http"):
-            photo_urls.append(url)
+            media_urls.append(url)
             
-    print(f"Найдено {len(photo_urls)} URL-адресов для строки {row_idx}.")
+    print(f"Найдено {len(media_urls)} URL-адресов для строки {row_idx}.")
 
-    photo_data = []
-    if photo_urls:
-        for url in photo_urls:
+    media_data = []
+    if media_urls:
+        for url in media_urls:
             try:
-                resp = requests.get(url, timeout=20)
+                resp = requests.get(url, timeout=(5, 60))  # Увеличенный таймаут для видео
                 resp.raise_for_status()
                 file_data = resp.content
-                file_name = url.split("/")[-1].split("?")[0] or "image.jpg"
-                photo_data.append((file_data, file_name))
+                file_base = url.split("/")[-1].split("?")[0]
+                content_type = resp.headers.get('Content-Type', '').lower()
+                
+                # Определение имени файла с правильным расширением
+                if file_base and '.' in file_base:
+                    file_name = file_base
+                else:
+                    if 'video' in content_type:
+                        file_name = "video.mp4"
+                    elif 'image' in content_type:
+                        file_name = "image.jpg"
+                    else:
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: Неподдерживаемый тип {content_type} для {url}. Пропуск.")
+                        continue
+                
+                media_data.append((file_data, file_name))
             except Exception as e:
-                print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить изображение {url} - {e}")
+                print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить медиа {url} - {e}")
     
     # Отправка сообщений — по одному клиенту, без совместного использования одних и тех же BytesIO
-    clients_with_channels = [(c, acc.get("channel")) for c, acc in zip(clients, accounts)]
+    clients_with_channels = [(c, acc) for c, acc in zip(clients, accounts) if acc.get("channel")]
 
-    sent_any = False
-    for client, channel_str in clients_with_channels:
+    # Отправляем в каждый канал; учитываем успехи и провалы по аккаунтам
+    targets_count = len(clients_with_channels)
+    ok = 0
+    fail = []
+
+    for client, acc in clients_with_channels:
+        channel_str = acc.get("channel")
+        acc_idx = acc.get("index")
         if not channel_str:
             continue
 
@@ -275,7 +295,8 @@ async def send_post(record, row_idx):
             if not client.is_connected():
                 await client.connect()
         except Exception as e:
-            print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось подключить клиента перед отправкой: {e}")
+            print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} не удалось подключить клиента перед отправкой: {e}")
+            fail.append((acc_idx, channel_str, f"connect: {e}"))
             continue
 
         try:
@@ -284,48 +305,55 @@ async def send_post(record, row_idx):
             channel = channel_str
 
         try:
-            if photo_data:
+            if media_data:
                 # создаём свежие BytesIO на каждого клиента, чтобы не делить один и тот же буфер
                 file_objs = []
-                for data, fname in photo_data:
+                for data, fname in media_data:
                     bio = io.BytesIO(data)
                     bio.name = fname
                     file_objs.append(bio)
-                await client.send_file(channel, file_objs, caption=message_html)
+                await client.send_file(channel, file_objs, caption=message_html, supports_streaming=True)
             else:
                 await client.send_message(channel, message_html)
-            sent_any = True
+            ok += 1
+            print(f"TG{acc_idx}: отправлено в {channel_str}")
             # Небольшая пауза, чтобы снизить одновременные запросы ко всем прокси
             await asyncio.sleep(0.5)
         except (tl_errors.FloodWaitError, tl_errors.SlowModeWaitError) as e:
-            print(f"ОШИБКА: ограничение Telegram при отправке: {e}. Пропуск для этого клиента.")
+            print(f"ОШИБКА: TG{acc_idx} ограничение Telegram при отправке: {e}. Пропуск для этого клиента.")
+            fail.append((acc_idx, channel_str, f"rate: {e}"))
         except Exception as e:
             # Попытка одноразового переподключения и повторной отправки
-            print(f"ПРЕДУПРЕЖДЕНИЕ: ошибка при отправке через клиента: {e}. Пробуем переподключиться и повторить...")
+            print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} ошибка при отправке: {e}. Пробуем переподключиться и повторить...")
             try:
                 await client.disconnect()
             except Exception:
                 pass
             try:
                 await client.connect()
-                if photo_data:
+                if media_data:
                     file_objs = []
-                    for data, fname in photo_data:
+                    for data, fname in media_data:
                         bio = io.BytesIO(data)
                         bio.name = fname
                         file_objs.append(bio)
-                    await client.send_file(channel, file_objs, caption=message_html)
+                    await client.send_file(channel, file_objs, caption=message_html, supports_streaming=True)
                 else:
                     await client.send_message(channel, message_html)
-                sent_any = True
+                ok += 1
+                print(f"TG{acc_idx}: повторная отправка успешна в {channel_str}")
             except Exception as e2:
-                print(f"ОШИБКА: повторная отправка не удалась: {e2}")
+                print(f"ОШИБКА: TG{acc_idx} повторная отправка не удалась: {e2}")
+                fail.append((acc_idx, channel_str, f"retry: {e2}"))
 
-    if sent_any:
+    if ok == targets_count and targets_count > 0:
         worksheet.update_cell(row_idx, 1, "TRUE")
-        print(f"Сообщение для строки {row_idx} отправлено и отмечено как отправленное.")
+        print(f"Сообщение для строки {row_idx} отправлено во все каналы и отмечено как отправленное.")
     else:
-        print(f"Для строки {row_idx} не удалось отправить сообщение ни через один настроенный клиент.")
+        if targets_count == 0:
+            print(f"Для строки {row_idx} не задано ни одного канала у настроенных аккаунтов.")
+        else:
+            print(f"Строка {row_idx}: отправлено {ok}/{targets_count}. Не все каналы получили пост. Не отмечаем как отправленное. Неудачи: {fail}")
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
@@ -387,4 +415,4 @@ async def main():
 # --- 6. ЗАПУСК СКРИПТА ---
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) 
