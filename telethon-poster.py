@@ -87,6 +87,9 @@ if missing_proxy:
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
 
+# Кол-во перс-столбцов-флагов в таблице: "Отправлено 1..N"
+SENT_FLAGS_COUNT = int(os.environ.get("SENT_FLAGS_COUNT", 7))
+
 # --- 2. НАСТРОЙКА КЛИЕНТОВ ---
 
 # Авторизация в Google Sheets
@@ -98,6 +101,20 @@ try:
 except Exception as e:
     print(f"ОШИБКА: Не удалось подключиться к Google Sheets. Проверьте GOOGLE_CREDS_JSON и GSHEET_ID. {e}")
     exit()
+
+# Кэш заголовков -> индексов столбцов
+try:
+    header_row = worksheet.row_values(1)
+    HEADER_TO_COL = {name.strip(): idx for idx, name in enumerate(header_row, start=1)}
+except Exception as e:
+    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось прочитать заголовки листа: {e}")
+    HEADER_TO_COL = {}
+
+def get_col_index(name: str):
+    idx = HEADER_TO_COL.get(name)
+    if not idx:
+        print(f"ПРЕДУПРЕЖДЕНИЕ: не найден столбец '{name}' в заголовке таблицы.")
+    return idx
 
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
@@ -120,6 +137,10 @@ for i, acc in enumerate(accounts):
             timeout=30,
         )
     )
+
+# Удобные словари доступа по индексу аккаунта
+ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
+CLIENT_BY_INDEX = {acc["index"]: c for c, acc in zip(clients, accounts)}
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР ---
 
@@ -167,7 +188,7 @@ emoji_placeholders = {
 
 # --- 4. ФУНКЦИЯ ОТПРАВКИ ПОСТА ---
 
-async def send_post(record, row_idx):
+async def send_post(record, row_idx, pending_indices=None):
     """Собирает, форматирует и отправляет пост на основе строки из таблицы."""
     # Парсинг данных из записи
     status = record.get("Статус", "")
@@ -277,7 +298,12 @@ async def send_post(record, row_idx):
                 print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить медиа {url} - {e}")
     
     # Отправка сообщений — по одному клиенту, без совместного использования одних и тех же BytesIO
-    clients_with_channels = [(c, acc) for c, acc in zip(clients, accounts) if acc.get("channel")]
+    if pending_indices is None:
+        target_indexes = [i for i, acc in ACC_BY_INDEX.items() if i <= SENT_FLAGS_COUNT and acc.get("channel") and str(record.get(f"Отправлено {i}", "")).upper() != "TRUE"]
+    else:
+        target_indexes = [i for i in pending_indices if i in ACC_BY_INDEX and ACC_BY_INDEX[i].get("channel")]
+
+    clients_with_channels = [(CLIENT_BY_INDEX[i], ACC_BY_INDEX[i]) for i in sorted(target_indexes)]
 
     # Отправляем в каждый канал; учитываем успехи и провалы по аккаунтам
     targets_count = len(clients_with_channels)
@@ -317,6 +343,14 @@ async def send_post(record, row_idx):
                 await client.send_message(channel, message_html)
             ok += 1
             print(f"TG{acc_idx}: отправлено в {channel_str}")
+            # Отмечаем флаг "Отправлено {n}" только для этого аккаунта
+            flag_name = f"Отправлено {acc_idx}"
+            col_idx = get_col_index(flag_name)
+            if col_idx:
+                try:
+                    worksheet.update_cell(row_idx, col_idx, "TRUE")
+                except Exception as e_upd:
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить ячейку флага {flag_name} (строка {row_idx}): {e_upd}")
             # Небольшая пауза, чтобы снизить одновременные запросы ко всем прокси
             await asyncio.sleep(0.5)
         except (tl_errors.FloodWaitError, tl_errors.SlowModeWaitError) as e:
@@ -342,18 +376,18 @@ async def send_post(record, row_idx):
                     await client.send_message(channel, message_html)
                 ok += 1
                 print(f"TG{acc_idx}: повторная отправка успешна в {channel_str}")
+                flag_name = f"Отправлено {acc_idx}"
+                col_idx = get_col_index(flag_name)
+                if col_idx:
+                    try:
+                        worksheet.update_cell(row_idx, col_idx, "TRUE")
+                    except Exception as e_upd:
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить ячейку флага {flag_name} (строка {row_idx}): {e_upd}")
             except Exception as e2:
                 print(f"ОШИБКА: TG{acc_idx} повторная отправка не удалась: {e2}")
                 fail.append((acc_idx, channel_str, f"retry: {e2}"))
 
-    if ok == targets_count and targets_count > 0:
-        worksheet.update_cell(row_idx, 1, "TRUE")
-        print(f"Сообщение для строки {row_idx} отправлено во все каналы и отмечено как отправленное.")
-    else:
-        if targets_count == 0:
-            print(f"Для строки {row_idx} не задано ни одного канала у настроенных аккаунтов.")
-        else:
-            print(f"Строка {row_idx}: отправлено {ok}/{targets_count}. Не все каналы получили пост. Не отмечаем как отправленное. Неудачи: {fail}")
+    print(f"Строка {row_idx}: перс-отправки завершены. Успешно {ok}/{targets_count}. Неудачи: {fail}")
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
@@ -379,11 +413,18 @@ async def main():
             now = datetime.now(tz)
 
             for idx, record in enumerate(records, start=2):
-                sent_flag = record.get("Отправлено")
-                if str(sent_flag).upper() == "TRUE":
+                if not str(record.get("Имя", "")).strip():
                     continue
 
-                if not str(record.get("Имя", "")).strip():
+                # Определяем какие аккаунты ещё не отправили (по флагам "Отправлено n")
+                active_idx = [acc["index"] for acc in accounts if acc.get("channel") and acc["index"] <= SENT_FLAGS_COUNT]
+                if not active_idx:
+                    # Нет целевых аккаунтов с каналами
+                    continue
+
+                pending_idx = [i for i in active_idx if str(record.get(f"Отправлено {i}", "")).upper() != "TRUE"]
+                if not pending_idx:
+                    # Всё уже отправлено по всем требуемым аккаунтам
                     continue
 
                 time_str = record.get("Время")
@@ -396,7 +437,7 @@ async def main():
 
                     if sched_time <= now:
                         print(f"Найдена запись для отправки в строке {idx}.")
-                        await send_post(record, idx)
+                        await send_post(record, idx, pending_indices=pending_idx)
 
                 except ValueError:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: Неверный формат времени в строке {idx}: '{time_str}'. Ожидается 'ДД.ММ.ГГГГ ЧЧ:ММ:СС'.")
