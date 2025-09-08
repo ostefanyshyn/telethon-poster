@@ -305,16 +305,14 @@ async def send_post(record, row_idx, pending_indices=None):
 
     clients_with_channels = [(CLIENT_BY_INDEX[i], ACC_BY_INDEX[i]) for i in sorted(target_indexes)]
 
-    # Отправляем в каждый канал; учитываем успехи и провалы по аккаунтам
+    # Отправляем в каждый канал КОНКУРЕНТНО; учитываем успехи и провалы по аккаунтам
     targets_count = len(clients_with_channels)
-    ok = 0
-    fail = []
 
-    for client, acc in clients_with_channels:
+    async def _send_to_one(client, acc):
         channel_str = acc.get("channel")
         acc_idx = acc.get("index")
         if not channel_str:
-            continue
+            return acc_idx, channel_str, False, "no_channel"
 
         # Гарантируем подключение клиента (переподключаем при необходимости)
         try:
@@ -322,8 +320,7 @@ async def send_post(record, row_idx, pending_indices=None):
                 await client.connect()
         except Exception as e:
             print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} не удалось подключить клиента перед отправкой: {e}")
-            fail.append((acc_idx, channel_str, f"connect: {e}"))
-            continue
+            return acc_idx, channel_str, False, f"connect: {e}"
 
         try:
             channel = int(channel_str)
@@ -341,7 +338,7 @@ async def send_post(record, row_idx, pending_indices=None):
                 await client.send_file(channel, file_objs, caption=message_html, supports_streaming=True)
             else:
                 await client.send_message(channel, message_html)
-            ok += 1
+
             print(f"TG{acc_idx}: отправлено в {channel_str}")
             # Отмечаем флаг "Отправлено {n}" только для этого аккаунта
             flag_name = f"Отправлено {acc_idx}"
@@ -351,11 +348,13 @@ async def send_post(record, row_idx, pending_indices=None):
                     worksheet.update_cell(row_idx, col_idx, "TRUE")
                 except Exception as e_upd:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить ячейку флага {flag_name} (строка {row_idx}): {e_upd}")
-            # Небольшая пауза, чтобы снизить одновременные запросы ко всем прокси
-            await asyncio.sleep(0.5)
+
+            return acc_idx, channel_str, True, None
+
         except (tl_errors.FloodWaitError, tl_errors.SlowModeWaitError) as e:
             print(f"ОШИБКА: TG{acc_idx} ограничение Telegram при отправке: {e}. Пропуск для этого клиента.")
-            fail.append((acc_idx, channel_str, f"rate: {e}"))
+            return acc_idx, channel_str, False, f"rate: {e}"
+
         except Exception as e:
             # Попытка одноразового переподключения и повторной отправки
             print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} ошибка при отправке: {e}. Пробуем переподключиться и повторить...")
@@ -374,7 +373,7 @@ async def send_post(record, row_idx, pending_indices=None):
                     await client.send_file(channel, file_objs, caption=message_html, supports_streaming=True)
                 else:
                     await client.send_message(channel, message_html)
-                ok += 1
+
                 print(f"TG{acc_idx}: повторная отправка успешна в {channel_str}")
                 flag_name = f"Отправлено {acc_idx}"
                 col_idx = get_col_index(flag_name)
@@ -383,10 +382,21 @@ async def send_post(record, row_idx, pending_indices=None):
                         worksheet.update_cell(row_idx, col_idx, "TRUE")
                     except Exception as e_upd:
                         print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить ячейку флага {flag_name} (строка {row_idx}): {e_upd}")
+
+                return acc_idx, channel_str, True, None
+
             except Exception as e2:
                 print(f"ОШИБКА: TG{acc_idx} повторная отправка не удалась: {e2}")
-                fail.append((acc_idx, channel_str, f"retry: {e2}"))
+                return acc_idx, channel_str, False, f"retry: {e2}"
 
+    # Запускаем все отправки одновременно
+    results = await asyncio.gather(
+        *[ _send_to_one(client, acc) for (client, acc) in clients_with_channels ],
+        return_exceptions=False
+    )
+
+    ok = sum(1 for (_, _, success, _) in results if success)
+    fail = [ (acc_idx, ch, err) for (acc_idx, ch, success, err) in results if not success ]
     print(f"Строка {row_idx}: перс-отправки завершены. Успешно {ok}/{targets_count}. Неудачи: {fail}")
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
