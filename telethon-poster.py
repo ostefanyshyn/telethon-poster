@@ -30,11 +30,20 @@ if sys.version_info >= (3, 13):
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON")
 
+# Общие Telegram API ключи (одни для всех аккаунтов)
+TG_API_ID_STR = os.environ.get("TG_API_ID") or os.environ.get("API_ID")
+TG_API_HASH = os.environ.get("TG_API_HASH") or os.environ.get("API_HASH")
+if not TG_API_ID_STR or not TG_API_HASH:
+    print("ОШИБКА: Укажите TG_API_ID и TG_API_HASH (или API_ID/API_HASH) в окружении.")
+    exit(1)
+try:
+    TG_API_ID = int(TG_API_ID_STR)
+except Exception:
+    TG_API_ID = 0
+
 # Telegram аккаунты: читаем TG{n}_* циклом из окружения
 accounts = []
 for n in range(1, 21):
-    api_id_str = os.environ.get(f"TG{n}_API_ID")
-    api_hash = os.environ.get(f"TG{n}_API_HASH")
     session = os.environ.get(f"TG{n}_SESSION")
     channel = os.environ.get(f"TG{n}_CHANNEL")
 
@@ -46,12 +55,9 @@ for n in range(1, 21):
     user = os.environ.get(f"TG{n}_PROXY_USER")
     password = os.environ.get(f"TG{n}_PROXY_PASS")
 
-    if not api_id_str or not api_hash:
+    # Пропускаем аккаунт, если не задан ни session, ни channel
+    if not session and not channel:
         continue
-    try:
-        api_id = int(api_id_str)
-    except Exception:
-        api_id = 0
 
     # Сборка кортежа прокси, если задан
     proxy = None
@@ -66,8 +72,8 @@ for n in range(1, 21):
 
     accounts.append({
         "index": n,
-        "api_id": api_id,
-        "api_hash": api_hash,
+        "api_id": TG_API_ID,
+        "api_hash": TG_API_HASH,
         "session": session,
         "channel": channel,
         "proxy": proxy,
@@ -224,6 +230,10 @@ async def send_post(record, row_idx, pending_indices=None):
     message_html_lines.append("")
     message_html_lines.append(f'<b>Фото {foto_checks}</b>')
     message_html_lines.append("")
+    if param_lines:
+        message_html_lines.append("Параметры:")
+        message_html_lines.append(f'<b><i>{"\n".join(param_lines)}</i></b>')
+        message_html_lines.append("")
     if services and str(services).strip():
         message_html_lines.append("Услуги:")
         message_html_lines.append(f'<b><i>{services}</i></b>')
@@ -231,10 +241,6 @@ async def send_post(record, row_idx, pending_indices=None):
     if extra_services and str(extra_services).strip():
         message_html_lines.append("Доп. услуги:")
         message_html_lines.append(f'<b><i>{extra_services}</i></b>')
-        message_html_lines.append("")
-    if param_lines:
-        message_html_lines.append("Параметры:")
-        message_html_lines.append(f'<b><i>{"\n".join(param_lines)}</i></b>')
         message_html_lines.append("")
     def _fmt_price(val):
         try:
@@ -404,7 +410,7 @@ async def send_post(record, row_idx, pending_indices=None):
 async def main():
     """Главная функция: подключается к клиентам и запускает бесконечный цикл проверки."""
     if not clients:
-        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте переменные TG{n}_API_ID и TG{n}_API_HASH.")
+        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте TG_API_ID/TG_API_HASH и TG{n}_SESSION/TG{n}_CHANNEL.")
         return
         
     print("Подключение Telegram клиентов...")

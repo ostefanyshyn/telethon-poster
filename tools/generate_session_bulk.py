@@ -4,8 +4,9 @@
 
 Особенности:
 - Автоматически находит аккаунты TG{N}_* в .env.gen (N = 1..∞).
+- Поддерживает общий TG_API_ID/TG_API_HASH (или API_ID/API_HASH) — используется как дефолт для всех аккаунтов, если у TG{N}_* нет своих.
 - Поддерживает прокси (SOCKS4/SOCKS5/HTTP) с RDNS и логином/паролем.
-- Обрабатывает 2FA (two‑step) — берёт TG_PASSWORD из .env.gen, либо попросит ввести.
+- Обрабатывает 2FA (two‑step) — берёт пароли из TG{N}_PASSWORDS/TG_PASSWORDS (через запятую) и/или TG{N}_PASSWORD/TG_PASSWORD; пробует по очереди, а затем запросит ввод.
 - Создаёт строковые сессии и сохраняет их в файл `sessions/sessions.txt`.
 - Всегда перегенерирует сессии; существующие TG{N}_SESSION игнорируются.
 
@@ -84,6 +85,40 @@ def to_bool(s: Optional[str], default: bool = False) -> bool:
     return s.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def split_passwords(val: Optional[str]) -> List[str]:
+    """Разбивает строку паролей 2FA по запятым/точкам с запятой и удаляет дубликаты, сохраняя порядок."""
+    if not val:
+        return []
+    parts = re.split(r"[;,]", val)
+    out: List[str] = []
+    for p in parts:
+        p = p.strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def get_passwords_for(env: Dict[str, str], idx: int) -> List[str]:
+    """Возвращает список паролей 2FA для аккаунта по приоритету:
+    TG{N}_PASSWORDS → TG{N}_PASSWORD → TG_PASSWORDS → TG_PASSWORD
+    """
+    acc_list = get_any(env, [f"TG{idx}_PASSWORDS"]) or None
+    acc_single = get_any(env, [f"TG{idx}_PASSWORD"]) or None
+    glob_list = get_any(env, ["TG_PASSWORDS"]) or None
+    glob_single = get_any(env, ["TG_PASSWORD"]) or None
+
+    passwords: List[str] = []
+    passwords += split_passwords(acc_list)
+    if acc_single and acc_single not in passwords:
+        passwords.append(acc_single)
+    for p in split_passwords(glob_list):
+        if p not in passwords:
+            passwords.append(p)
+    if glob_single and glob_single not in passwords:
+        passwords.append(glob_single)
+    return passwords
+
+
 # ----------------------------- модель аккаунта ------------------------------
 @dataclass
 class Account:
@@ -111,8 +146,8 @@ def discover_accounts(env: Dict[str, str], only: Optional[List[int]] = None) -> 
     accounts: List[Account] = []
     for i in sorted(indices):
         # Ключи могут отличаться регистром (например, TG4_Phone)
-        api_id_s = get_any(env, [f"TG{i}_API_ID"]) or ""
-        api_hash = get_any(env, [f"TG{i}_API_HASH"]) or ""
+        api_id_s = get_any(env, [f"TG{i}_API_ID", "TG_API_ID", "API_ID"]) or ""
+        api_hash = get_any(env, [f"TG{i}_API_HASH", "TG_API_HASH", "API_HASH"]) or ""
         phone = get_any(env, [f"TG{i}_PHONE", f"TG{i}_Phone"])  # опционально
         session_str = get_any(env, [f"TG{i}_SESSION"])  # опционально
 
@@ -165,7 +200,7 @@ def discover_accounts(env: Dict[str, str], only: Optional[List[int]] = None) -> 
 
 
 # --------------------------- логин и сохранение -----------------------------
-async def ensure_session(acc: Account, twofa_default: Optional[str], force: bool) -> Optional[str]:
+async def ensure_session(acc: Account, twofa_passwords: Optional[List[str]], force: bool) -> Optional[str]:
     """Создать/вернуть StringSession для аккаунта. Возвращает строку сессии или None при ошибке.
     Если session_str уже задана и not force — возвращает её без логина.
     """
@@ -201,13 +236,23 @@ async def ensure_session(acc: Account, twofa_default: Optional[str], force: bool
             try:
                 await client.sign_in(acc.phone, code)
             except errors.SessionPasswordNeededError:
-                pwd = twofa_default if twofa_default else getpass(f"Пароль 2FA для {acc.phone} (не отображается): ")
-                try:
-                    await client.sign_in(password=pwd)
-                except errors.PasswordHashInvalidError:
-                    print(f"[✗] {tag}: неверный пароль 2FA")
-                    await client.disconnect()
-                    return None
+                success = False
+                for pwd in (twofa_passwords or []):
+                    try:
+                        await client.sign_in(password=pwd)
+                        success = True
+                        break
+                    except errors.PasswordHashInvalidError:
+                        continue
+                if not success:
+                    pwd = getpass(f"Пароль 2FA для {acc.phone} (не отображается): ")
+                    try:
+                        await client.sign_in(password=pwd)
+                        success = True
+                    except errors.PasswordHashInvalidError:
+                        print(f"[✗] {tag}: неверный пароль 2FA")
+                        await client.disconnect()
+                        return None
             except errors.PhoneCodeInvalidError:
                 print(f"[✗] {tag}: неверный код подтверждения")
                 await client.disconnect()
@@ -266,7 +311,7 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     env = parse_env_file(env_path)
-    twofa_default = env.get("TG_PASSWORD")  # общий пароль 2FA, если задан
+    # twofa_default = env.get("TG_PASSWORD")  # общий пароль 2FA, если задан
 
     only_list: Optional[List[int]] = None
     if args.only:
@@ -284,7 +329,7 @@ def main() -> int:
     async def runner() -> int:
         results: Dict[int, str] = {}
         for acc in accounts:
-            sess = await ensure_session(acc, twofa_default=twofa_default, force=True)
+            sess = await ensure_session(acc, twofa_passwords=get_passwords_for(env, acc.idx), force=True)
             if sess:
                 results[acc.idx] = sess
         if not results:
