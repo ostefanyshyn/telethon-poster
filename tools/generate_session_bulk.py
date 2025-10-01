@@ -232,7 +232,11 @@ async def ensure_session(acc: Account, twofa_passwords: Optional[List[str]], for
                 await client.disconnect()
                 return None
 
-            code = input(f"Введите код для {acc.phone}: ")
+            code = input(f"Введите код для {acc.phone} (или 'skip' для пропуска): ").strip()
+            if code.lower() == "skip":
+                print(f"[i] {tag}: пропуск аккаунта по команде 'skip'")
+                await client.disconnect()
+                return None
             try:
                 await client.sign_in(acc.phone, code)
             except errors.SessionPasswordNeededError:
@@ -245,7 +249,11 @@ async def ensure_session(acc: Account, twofa_passwords: Optional[List[str]], for
                     except errors.PasswordHashInvalidError:
                         continue
                 if not success:
-                    pwd = getpass(f"Пароль 2FA для {acc.phone} (не отображается): ")
+                    pwd = getpass(f"Пароль 2FA для {acc.phone} (не отображается, введите 'skip' для пропуска): ").strip()
+                    if pwd.lower() == "skip":
+                        print(f"[i] {tag}: пропуск аккаунта по команде 'skip'")
+                        await client.disconnect()
+                        return None
                     try:
                         await client.sign_in(password=pwd)
                         success = True
@@ -336,10 +344,10 @@ def main() -> int:
             print("[!] Не удалось получить ни одной сессии")
             return 1
 
-        # Сформируем файл с сессиями
+        # Сформируем вывод с сессиями в терминал
         lines = [f"TG{idx}_SESSION={sess}" for idx, sess in sorted(results.items())]
-        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print("[✓] Все сессии сохранены.")
+        payload = "\n".join(lines) + "\n"
+        print(payload, end="")
         return 0
 
     return asyncio.run(runner())
