@@ -5,8 +5,73 @@ import os
 import struct
 from datetime import datetime
 if TYPE_CHECKING:
-    from ...tl.types import TypeChat, TypeUser, TypeUserFull
+    from ...tl.types import TypeChat, TypeDocument, TypeUser, TypeUserFull
 
+
+
+class SavedMusic(TLObject):
+    CONSTRUCTOR_ID = 0x34a2f297
+    SUBCLASS_OF_ID = 0xf813ae37
+
+    def __init__(self, count: int, documents: List['TypeDocument']):
+        """
+        Constructor for users.SavedMusic: Instance of either SavedMusicNotModified, SavedMusic.
+        """
+        self.count = count
+        self.documents = documents
+
+    def to_dict(self):
+        return {
+            '_': 'SavedMusic',
+            'count': self.count,
+            'documents': [] if self.documents is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.documents]
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\x97\xf2\xa24',
+            struct.pack('<i', self.count),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.documents)),b''.join(x._bytes() for x in self.documents),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _count = reader.read_int()
+        reader.read_int()
+        _documents = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _documents.append(_x)
+
+        return cls(count=_count, documents=_documents)
+
+
+class SavedMusicNotModified(TLObject):
+    CONSTRUCTOR_ID = 0xe3878aa4
+    SUBCLASS_OF_ID = 0xf813ae37
+
+    def __init__(self, count: int):
+        """
+        Constructor for users.SavedMusic: Instance of either SavedMusicNotModified, SavedMusic.
+        """
+        self.count = count
+
+    def to_dict(self):
+        return {
+            '_': 'SavedMusicNotModified',
+            'count': self.count
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xa4\x8a\x87\xe3',
+            struct.pack('<i', self.count),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _count = reader.read_int()
+        return cls(count=_count)
 
 
 class UserFull(TLObject):

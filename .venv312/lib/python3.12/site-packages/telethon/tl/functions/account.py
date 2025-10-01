@@ -6,7 +6,7 @@ import os
 import struct
 from datetime import datetime
 if TYPE_CHECKING:
-    from ...tl.types import TypeAccountDaysTTL, TypeAutoDownloadSettings, TypeAutoSaveSettings, TypeBaseTheme, TypeBirthday, TypeBusinessBotRights, TypeBusinessWorkHours, TypeCodeSettings, TypeEmailVerification, TypeEmailVerifyPurpose, TypeEmojiStatus, TypeGlobalPrivacySettings, TypeInputBusinessAwayMessage, TypeInputBusinessBotRecipients, TypeInputBusinessChatLink, TypeInputBusinessGreetingMessage, TypeInputBusinessIntro, TypeInputChannel, TypeInputCheckPasswordSRP, TypeInputDocument, TypeInputFile, TypeInputGeoPoint, TypeInputNotifyPeer, TypeInputPeer, TypeInputPeerNotifySettings, TypeInputPhoto, TypeInputPrivacyKey, TypeInputPrivacyRule, TypeInputSecureValue, TypeInputTheme, TypeInputThemeSettings, TypeInputUser, TypeInputWallPaper, TypeReactionsNotifySettings, TypeReportReason, TypeSecureCredentialsEncrypted, TypeSecureValueHash, TypeSecureValueType, TypeWallPaperSettings
+    from ...tl.types import TypeAccountDaysTTL, TypeAutoDownloadSettings, TypeAutoSaveSettings, TypeBaseTheme, TypeBirthday, TypeBusinessBotRights, TypeBusinessWorkHours, TypeCodeSettings, TypeEmailVerification, TypeEmailVerifyPurpose, TypeEmojiStatus, TypeGlobalPrivacySettings, TypeInputBusinessAwayMessage, TypeInputBusinessBotRecipients, TypeInputBusinessChatLink, TypeInputBusinessGreetingMessage, TypeInputBusinessIntro, TypeInputChannel, TypeInputCheckPasswordSRP, TypeInputDocument, TypeInputFile, TypeInputGeoPoint, TypeInputNotifyPeer, TypeInputPeer, TypeInputPeerNotifySettings, TypeInputPhoto, TypeInputPrivacyKey, TypeInputPrivacyRule, TypeInputSecureValue, TypeInputTheme, TypeInputThemeSettings, TypeInputUser, TypeInputWallPaper, TypeProfileTab, TypeReactionsNotifySettings, TypeReportReason, TypeSecureCredentialsEncrypted, TypeSecureValueHash, TypeSecureValueType, TypeWallPaperSettings
     from ...tl.types.account import TypePasswordInputSettings
 
 
@@ -58,43 +58,6 @@ class AcceptAuthorizationRequest(TLRequest):
 
         _credentials = reader.tgread_object()
         return cls(bot_id=_bot_id, scope=_scope, public_key=_public_key, value_hashes=_value_hashes, credentials=_credentials)
-
-
-class AddNoPaidMessagesExceptionRequest(TLRequest):
-    CONSTRUCTOR_ID = 0x6f688aa7
-    SUBCLASS_OF_ID = 0xf5b399ac
-
-    def __init__(self, user_id: 'TypeInputUser', refund_charged: Optional[bool]=None):
-        """
-        :returns Bool: This type has no constructors.
-        """
-        self.user_id = user_id
-        self.refund_charged = refund_charged
-
-    async def resolve(self, client, utils):
-        self.user_id = utils.get_input_user(await client.get_input_entity(self.user_id))
-
-    def to_dict(self):
-        return {
-            '_': 'AddNoPaidMessagesExceptionRequest',
-            'user_id': self.user_id.to_dict() if isinstance(self.user_id, TLObject) else self.user_id,
-            'refund_charged': self.refund_charged
-        }
-
-    def _bytes(self):
-        return b''.join((
-            b'\xa7\x8aho',
-            struct.pack('<I', (0 if self.refund_charged is None or self.refund_charged is False else 1)),
-            self.user_id._bytes(),
-        ))
-
-    @classmethod
-    def from_reader(cls, reader):
-        flags = reader.read_int()
-
-        _refund_charged = bool(flags & 1)
-        _user_id = reader.tgread_object()
-        return cls(user_id=_user_id, refund_charged=_refund_charged)
 
 
 class CancelPasswordEmailRequest(TLRequest):
@@ -1210,34 +1173,46 @@ class GetNotifySettingsRequest(TLRequest):
 
 
 class GetPaidMessagesRevenueRequest(TLRequest):
-    CONSTRUCTOR_ID = 0xf1266f38
+    CONSTRUCTOR_ID = 0x19ba4a67
     SUBCLASS_OF_ID = 0x152f0c57
 
-    def __init__(self, user_id: 'TypeInputUser'):
+    def __init__(self, user_id: 'TypeInputUser', parent_peer: Optional['TypeInputPeer']=None):
         """
         :returns account.PaidMessagesRevenue: Instance of PaidMessagesRevenue.
         """
         self.user_id = user_id
+        self.parent_peer = parent_peer
 
     async def resolve(self, client, utils):
         self.user_id = utils.get_input_user(await client.get_input_entity(self.user_id))
+        if self.parent_peer:
+            self.parent_peer = utils.get_input_peer(await client.get_input_entity(self.parent_peer))
 
     def to_dict(self):
         return {
             '_': 'GetPaidMessagesRevenueRequest',
-            'user_id': self.user_id.to_dict() if isinstance(self.user_id, TLObject) else self.user_id
+            'user_id': self.user_id.to_dict() if isinstance(self.user_id, TLObject) else self.user_id,
+            'parent_peer': self.parent_peer.to_dict() if isinstance(self.parent_peer, TLObject) else self.parent_peer
         }
 
     def _bytes(self):
         return b''.join((
-            b'8o&\xf1',
+            b'gJ\xba\x19',
+            struct.pack('<I', (0 if self.parent_peer is None or self.parent_peer is False else 1)),
+            b'' if self.parent_peer is None or self.parent_peer is False else (self.parent_peer._bytes()),
             self.user_id._bytes(),
         ))
 
     @classmethod
     def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        if flags & 1:
+            _parent_peer = reader.tgread_object()
+        else:
+            _parent_peer = None
         _user_id = reader.tgread_object()
-        return cls(user_id=_user_id)
+        return cls(user_id=_user_id, parent_peer=_parent_peer)
 
 
 class GetPasswordRequest(TLRequest):
@@ -1353,6 +1328,34 @@ class GetRecentEmojiStatusesRequest(TLRequest):
     def _bytes(self):
         return b''.join((
             b'\x05\x81W\x0f',
+            struct.pack('<q', self.hash),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _hash = reader.read_long()
+        return cls(hash=_hash)
+
+
+class GetSavedMusicIdsRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xe09d5faf
+    SUBCLASS_OF_ID = 0x4b4af692
+
+    def __init__(self, hash: int):
+        """
+        :returns account.SavedMusicIds: Instance of either SavedMusicIdsNotModified, SavedMusicIds.
+        """
+        self.hash = hash
+
+    def to_dict(self):
+        return {
+            '_': 'GetSavedMusicIdsRequest',
+            'hash': self.hash
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xaf_\x9d\xe0',
             struct.pack('<q', self.hash),
         ))
 
@@ -1517,6 +1520,42 @@ class GetTmpPasswordRequest(TLRequest):
         _password = reader.tgread_object()
         _period = reader.read_int()
         return cls(password=_password, period=_period)
+
+
+class GetUniqueGiftChatThemesRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xfe74ef9f
+    SUBCLASS_OF_ID = 0x15c14aa8
+
+    def __init__(self, offset: int, limit: int, hash: int):
+        """
+        :returns account.ChatThemes: Instance of either ChatThemesNotModified, ChatThemes.
+        """
+        self.offset = offset
+        self.limit = limit
+        self.hash = hash
+
+    def to_dict(self):
+        return {
+            '_': 'GetUniqueGiftChatThemesRequest',
+            'offset': self.offset,
+            'limit': self.limit,
+            'hash': self.hash
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\x9f\xeft\xfe',
+            struct.pack('<i', self.offset),
+            struct.pack('<i', self.limit),
+            struct.pack('<q', self.hash),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _offset = reader.read_int()
+        _limit = reader.read_int()
+        _hash = reader.read_long()
+        return cls(offset=_offset, limit=_limit, hash=_hash)
 
 
 class GetWallPaperRequest(TLRequest):
@@ -2201,6 +2240,52 @@ class SaveAutoSaveSettingsRequest(TLRequest):
         return cls(settings=_settings, users=_users, chats=_chats, broadcasts=_broadcasts, peer=_peer)
 
 
+class SaveMusicRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xb26732a9
+    SUBCLASS_OF_ID = 0xf5b399ac
+
+    def __init__(self, id: 'TypeInputDocument', unsave: Optional[bool]=None, after_id: Optional['TypeInputDocument']=None):
+        """
+        :returns Bool: This type has no constructors.
+        """
+        self.id = id
+        self.unsave = unsave
+        self.after_id = after_id
+
+    async def resolve(self, client, utils):
+        self.id = utils.get_input_document(self.id)
+        if self.after_id:
+            self.after_id = utils.get_input_document(self.after_id)
+
+    def to_dict(self):
+        return {
+            '_': 'SaveMusicRequest',
+            'id': self.id.to_dict() if isinstance(self.id, TLObject) else self.id,
+            'unsave': self.unsave,
+            'after_id': self.after_id.to_dict() if isinstance(self.after_id, TLObject) else self.after_id
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xa92g\xb2',
+            struct.pack('<I', (0 if self.unsave is None or self.unsave is False else 1) | (0 if self.after_id is None or self.after_id is False else 2)),
+            self.id._bytes(),
+            b'' if self.after_id is None or self.after_id is False else (self.after_id._bytes()),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        _unsave = bool(flags & 1)
+        _id = reader.tgread_object()
+        if flags & 2:
+            _after_id = reader.tgread_object()
+        else:
+            _after_id = None
+        return cls(id=_id, unsave=_unsave, after_id=_after_id)
+
+
 class SaveRingtoneRequest(TLRequest):
     CONSTRUCTOR_ID = 0x3dea5b03
     SUBCLASS_OF_ID = 0xb1e28424
@@ -2606,6 +2691,34 @@ class SetGlobalPrivacySettingsRequest(TLRequest):
         return cls(settings=_settings)
 
 
+class SetMainProfileTabRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x5dee78b0
+    SUBCLASS_OF_ID = 0xf5b399ac
+
+    def __init__(self, tab: 'TypeProfileTab'):
+        """
+        :returns Bool: This type has no constructors.
+        """
+        self.tab = tab
+
+    def to_dict(self):
+        return {
+            '_': 'SetMainProfileTabRequest',
+            'tab': self.tab.to_dict() if isinstance(self.tab, TLObject) else self.tab
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xb0x\xee]',
+            self.tab._bytes(),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _tab = reader.tgread_object()
+        return cls(tab=_tab)
+
+
 class SetPrivacyRequest(TLRequest):
     CONSTRUCTOR_ID = 0xc9f81ce8
     SUBCLASS_OF_ID = 0xb55aba82
@@ -2704,6 +2817,55 @@ class ToggleConnectedBotPausedRequest(TLRequest):
         _peer = reader.tgread_object()
         _paused = reader.tgread_bool()
         return cls(peer=_peer, paused=_paused)
+
+
+class ToggleNoPaidMessagesExceptionRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xfe2eda76
+    SUBCLASS_OF_ID = 0xf5b399ac
+
+    def __init__(self, user_id: 'TypeInputUser', refund_charged: Optional[bool]=None, require_payment: Optional[bool]=None, parent_peer: Optional['TypeInputPeer']=None):
+        """
+        :returns Bool: This type has no constructors.
+        """
+        self.user_id = user_id
+        self.refund_charged = refund_charged
+        self.require_payment = require_payment
+        self.parent_peer = parent_peer
+
+    async def resolve(self, client, utils):
+        self.user_id = utils.get_input_user(await client.get_input_entity(self.user_id))
+        if self.parent_peer:
+            self.parent_peer = utils.get_input_peer(await client.get_input_entity(self.parent_peer))
+
+    def to_dict(self):
+        return {
+            '_': 'ToggleNoPaidMessagesExceptionRequest',
+            'user_id': self.user_id.to_dict() if isinstance(self.user_id, TLObject) else self.user_id,
+            'refund_charged': self.refund_charged,
+            'require_payment': self.require_payment,
+            'parent_peer': self.parent_peer.to_dict() if isinstance(self.parent_peer, TLObject) else self.parent_peer
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'v\xda.\xfe',
+            struct.pack('<I', (0 if self.refund_charged is None or self.refund_charged is False else 1) | (0 if self.require_payment is None or self.require_payment is False else 4) | (0 if self.parent_peer is None or self.parent_peer is False else 2)),
+            b'' if self.parent_peer is None or self.parent_peer is False else (self.parent_peer._bytes()),
+            self.user_id._bytes(),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        _refund_charged = bool(flags & 1)
+        _require_payment = bool(flags & 4)
+        if flags & 2:
+            _parent_peer = reader.tgread_object()
+        else:
+            _parent_peer = None
+        _user_id = reader.tgread_object()
+        return cls(user_id=_user_id, refund_charged=_refund_charged, require_payment=_require_payment, parent_peer=_parent_peer)
 
 
 class ToggleSponsoredMessagesRequest(TLRequest):

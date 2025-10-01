@@ -432,35 +432,43 @@ class SentCode(TLObject):
 
 
 class SentCodePaymentRequired(TLObject):
-    CONSTRUCTOR_ID = 0xd7cef980
+    CONSTRUCTOR_ID = 0xd7a2fcf9
     SUBCLASS_OF_ID = 0x6ce87081
 
-    def __init__(self, store_product: str, phone_code_hash: str):
+    def __init__(self, store_product: str, phone_code_hash: str, support_email_address: str, support_email_subject: str):
         """
         Constructor for auth.SentCode: Instance of either SentCode, SentCodeSuccess, SentCodePaymentRequired.
         """
         self.store_product = store_product
         self.phone_code_hash = phone_code_hash
+        self.support_email_address = support_email_address
+        self.support_email_subject = support_email_subject
 
     def to_dict(self):
         return {
             '_': 'SentCodePaymentRequired',
             'store_product': self.store_product,
-            'phone_code_hash': self.phone_code_hash
+            'phone_code_hash': self.phone_code_hash,
+            'support_email_address': self.support_email_address,
+            'support_email_subject': self.support_email_subject
         }
 
     def _bytes(self):
         return b''.join((
-            b'\x80\xf9\xce\xd7',
+            b'\xf9\xfc\xa2\xd7',
             self.serialize_bytes(self.store_product),
             self.serialize_bytes(self.phone_code_hash),
+            self.serialize_bytes(self.support_email_address),
+            self.serialize_bytes(self.support_email_subject),
         ))
 
     @classmethod
     def from_reader(cls, reader):
         _store_product = reader.tgread_string()
         _phone_code_hash = reader.tgread_string()
-        return cls(store_product=_store_product, phone_code_hash=_phone_code_hash)
+        _support_email_address = reader.tgread_string()
+        _support_email_subject = reader.tgread_string()
+        return cls(store_product=_store_product, phone_code_hash=_phone_code_hash, support_email_address=_support_email_address, support_email_subject=_support_email_subject)
 
 
 class SentCodeSuccess(TLObject):

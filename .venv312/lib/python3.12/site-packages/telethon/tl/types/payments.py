@@ -5,7 +5,7 @@ import os
 import struct
 from datetime import datetime
 if TYPE_CHECKING:
-    from ...tl.types import TypeBankCardOpenUrl, TypeChat, TypeConnectedBotStarRef, TypeDataJSON, TypeInvoice, TypePaymentFormMethod, TypePaymentRequestedInfo, TypePaymentSavedCredentials, TypePeer, TypeSavedStarGift, TypeShippingOption, TypeStarGift, TypeStarGiftAttribute, TypeStarRefProgram, TypeStarsAmount, TypeStarsRevenueStatus, TypeStarsSubscription, TypeStarsTransaction, TypeStatsGraph, TypeUpdates, TypeUser, TypeWebDocument
+    from ...tl.types import TypeBankCardOpenUrl, TypeChat, TypeConnectedBotStarRef, TypeDataJSON, TypeInvoice, TypePaymentFormMethod, TypePaymentRequestedInfo, TypePaymentSavedCredentials, TypePeer, TypeSavedStarGift, TypeShippingOption, TypeStarGift, TypeStarGiftAttribute, TypeStarGiftAttributeCounter, TypeStarGiftCollection, TypeStarRefProgram, TypeStarsAmount, TypeStarsRevenueStatus, TypeStarsSubscription, TypeStarsTransaction, TypeStatsGraph, TypeTextWithEntities, TypeUpdates, TypeUser, TypeWebDocument
 
 
 
@@ -44,6 +44,53 @@ class BankCardData(TLObject):
             _open_urls.append(_x)
 
         return cls(title=_title, open_urls=_open_urls)
+
+
+class CheckCanSendGiftResultFail(TLObject):
+    CONSTRUCTOR_ID = 0xd5e58274
+    SUBCLASS_OF_ID = 0x632efa30
+
+    def __init__(self, reason: 'TypeTextWithEntities'):
+        """
+        Constructor for payments.CheckCanSendGiftResult: Instance of either CheckCanSendGiftResultOk, CheckCanSendGiftResultFail.
+        """
+        self.reason = reason
+
+    def to_dict(self):
+        return {
+            '_': 'CheckCanSendGiftResultFail',
+            'reason': self.reason.to_dict() if isinstance(self.reason, TLObject) else self.reason
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b't\x82\xe5\xd5',
+            self.reason._bytes(),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _reason = reader.tgread_object()
+        return cls(reason=_reason)
+
+
+class CheckCanSendGiftResultOk(TLObject):
+    CONSTRUCTOR_ID = 0x374fa7ad
+    SUBCLASS_OF_ID = 0x632efa30
+
+    def to_dict(self):
+        return {
+            '_': 'CheckCanSendGiftResultOk'
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xad\xa7O7',
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        return cls()
 
 
 class CheckedGiftCode(TLObject):
@@ -777,6 +824,103 @@ class PaymentVerificationNeeded(TLObject):
         return cls(url=_url)
 
 
+class ResaleStarGifts(TLObject):
+    CONSTRUCTOR_ID = 0x947a12df
+    SUBCLASS_OF_ID = 0xb2dbb7e3
+
+    def __init__(self, count: int, gifts: List['TypeStarGift'], chats: List['TypeChat'], users: List['TypeUser'], next_offset: Optional[str]=None, attributes: Optional[List['TypeStarGiftAttribute']]=None, attributes_hash: Optional[int]=None, counters: Optional[List['TypeStarGiftAttributeCounter']]=None):
+        """
+        Constructor for payments.ResaleStarGifts: Instance of ResaleStarGifts.
+        """
+        self.count = count
+        self.gifts = gifts
+        self.chats = chats
+        self.users = users
+        self.next_offset = next_offset
+        self.attributes = attributes
+        self.attributes_hash = attributes_hash
+        self.counters = counters
+
+    def to_dict(self):
+        return {
+            '_': 'ResaleStarGifts',
+            'count': self.count,
+            'gifts': [] if self.gifts is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.gifts],
+            'chats': [] if self.chats is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.chats],
+            'users': [] if self.users is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.users],
+            'next_offset': self.next_offset,
+            'attributes': [] if self.attributes is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.attributes],
+            'attributes_hash': self.attributes_hash,
+            'counters': [] if self.counters is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.counters]
+        }
+
+    def _bytes(self):
+        assert ((self.attributes or self.attributes is not None) and (self.attributes_hash or self.attributes_hash is not None)) or ((self.attributes is None or self.attributes is False) and (self.attributes_hash is None or self.attributes_hash is False)), 'attributes, attributes_hash parameters must all be False-y (like None) or all me True-y'
+        return b''.join((
+            b'\xdf\x12z\x94',
+            struct.pack('<I', (0 if self.next_offset is None or self.next_offset is False else 1) | (0 if self.attributes is None or self.attributes is False else 2) | (0 if self.attributes_hash is None or self.attributes_hash is False else 2) | (0 if self.counters is None or self.counters is False else 4)),
+            struct.pack('<i', self.count),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.gifts)),b''.join(x._bytes() for x in self.gifts),
+            b'' if self.next_offset is None or self.next_offset is False else (self.serialize_bytes(self.next_offset)),
+            b'' if self.attributes is None or self.attributes is False else b''.join((b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.attributes)),b''.join(x._bytes() for x in self.attributes))),
+            b'' if self.attributes_hash is None or self.attributes_hash is False else (struct.pack('<q', self.attributes_hash)),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.chats)),b''.join(x._bytes() for x in self.chats),
+            b'' if self.counters is None or self.counters is False else b''.join((b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.counters)),b''.join(x._bytes() for x in self.counters))),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.users)),b''.join(x._bytes() for x in self.users),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        _count = reader.read_int()
+        reader.read_int()
+        _gifts = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _gifts.append(_x)
+
+        if flags & 1:
+            _next_offset = reader.tgread_string()
+        else:
+            _next_offset = None
+        if flags & 2:
+            reader.read_int()
+            _attributes = []
+            for _ in range(reader.read_int()):
+                _x = reader.tgread_object()
+                _attributes.append(_x)
+
+        else:
+            _attributes = None
+        if flags & 2:
+            _attributes_hash = reader.read_long()
+        else:
+            _attributes_hash = None
+        reader.read_int()
+        _chats = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _chats.append(_x)
+
+        if flags & 4:
+            reader.read_int()
+            _counters = []
+            for _ in range(reader.read_int()):
+                _x = reader.tgread_object()
+                _counters.append(_x)
+
+        else:
+            _counters = None
+        reader.read_int()
+        _users = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _users.append(_x)
+
+        return cls(count=_count, gifts=_gifts, chats=_chats, users=_users, next_offset=_next_offset, attributes=_attributes, attributes_hash=_attributes_hash, counters=_counters)
+
+
 class SavedInfo(TLObject):
     CONSTRUCTOR_ID = 0xfb8fe43c
     SUBCLASS_OF_ID = 0xad3cf146
@@ -886,6 +1030,58 @@ class SavedStarGifts(TLObject):
         return cls(count=_count, gifts=_gifts, chats=_chats, users=_users, chat_notifications_enabled=_chat_notifications_enabled, next_offset=_next_offset)
 
 
+class StarGiftCollections(TLObject):
+    CONSTRUCTOR_ID = 0x8a2932f3
+    SUBCLASS_OF_ID = 0xf01721ec
+
+    def __init__(self, collections: List['TypeStarGiftCollection']):
+        """
+        Constructor for payments.StarGiftCollections: Instance of either StarGiftCollectionsNotModified, StarGiftCollections.
+        """
+        self.collections = collections
+
+    def to_dict(self):
+        return {
+            '_': 'StarGiftCollections',
+            'collections': [] if self.collections is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.collections]
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xf32)\x8a',
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.collections)),b''.join(x._bytes() for x in self.collections),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        reader.read_int()
+        _collections = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _collections.append(_x)
+
+        return cls(collections=_collections)
+
+
+class StarGiftCollectionsNotModified(TLObject):
+    CONSTRUCTOR_ID = 0xa0ba4f17
+    SUBCLASS_OF_ID = 0xf01721ec
+
+    def to_dict(self):
+        return {
+            '_': 'StarGiftCollectionsNotModified'
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\x17O\xba\xa0',
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        return cls()
+
+
 class StarGiftUpgradePreview(TLObject):
     CONSTRUCTOR_ID = 0x167bd90b
     SUBCLASS_OF_ID = 0x5e2b68c7
@@ -948,28 +1144,34 @@ class StarGiftWithdrawalUrl(TLObject):
 
 
 class StarGifts(TLObject):
-    CONSTRUCTOR_ID = 0x901689ea
+    CONSTRUCTOR_ID = 0x2ed82995
     SUBCLASS_OF_ID = 0x6178d9a4
 
-    def __init__(self, hash: int, gifts: List['TypeStarGift']):
+    def __init__(self, hash: int, gifts: List['TypeStarGift'], chats: List['TypeChat'], users: List['TypeUser']):
         """
         Constructor for payments.StarGifts: Instance of either StarGiftsNotModified, StarGifts.
         """
         self.hash = hash
         self.gifts = gifts
+        self.chats = chats
+        self.users = users
 
     def to_dict(self):
         return {
             '_': 'StarGifts',
             'hash': self.hash,
-            'gifts': [] if self.gifts is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.gifts]
+            'gifts': [] if self.gifts is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.gifts],
+            'chats': [] if self.chats is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.chats],
+            'users': [] if self.users is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.users]
         }
 
     def _bytes(self):
         return b''.join((
-            b'\xea\x89\x16\x90',
+            b'\x95)\xd8.',
             struct.pack('<i', self.hash),
             b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.gifts)),b''.join(x._bytes() for x in self.gifts),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.chats)),b''.join(x._bytes() for x in self.chats),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.users)),b''.join(x._bytes() for x in self.users),
         ))
 
     @classmethod
@@ -981,7 +1183,19 @@ class StarGifts(TLObject):
             _x = reader.tgread_object()
             _gifts.append(_x)
 
-        return cls(hash=_hash, gifts=_gifts)
+        reader.read_int()
+        _chats = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _chats.append(_x)
+
+        reader.read_int()
+        _users = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _users.append(_x)
+
+        return cls(hash=_hash, gifts=_gifts, chats=_chats, users=_users)
 
 
 class StarGiftsNotModified(TLObject):
@@ -1032,28 +1246,32 @@ class StarsRevenueAdsAccountUrl(TLObject):
 
 
 class StarsRevenueStats(TLObject):
-    CONSTRUCTOR_ID = 0xc92bb73b
+    CONSTRUCTOR_ID = 0x6c207376
     SUBCLASS_OF_ID = 0xa54755f3
 
-    def __init__(self, revenue_graph: 'TypeStatsGraph', status: 'TypeStarsRevenueStatus', usd_rate: float):
+    def __init__(self, revenue_graph: 'TypeStatsGraph', status: 'TypeStarsRevenueStatus', usd_rate: float, top_hours_graph: Optional['TypeStatsGraph']=None):
         """
         Constructor for payments.StarsRevenueStats: Instance of StarsRevenueStats.
         """
         self.revenue_graph = revenue_graph
         self.status = status
         self.usd_rate = usd_rate
+        self.top_hours_graph = top_hours_graph
 
     def to_dict(self):
         return {
             '_': 'StarsRevenueStats',
             'revenue_graph': self.revenue_graph.to_dict() if isinstance(self.revenue_graph, TLObject) else self.revenue_graph,
             'status': self.status.to_dict() if isinstance(self.status, TLObject) else self.status,
-            'usd_rate': self.usd_rate
+            'usd_rate': self.usd_rate,
+            'top_hours_graph': self.top_hours_graph.to_dict() if isinstance(self.top_hours_graph, TLObject) else self.top_hours_graph
         }
 
     def _bytes(self):
         return b''.join((
-            b';\xb7+\xc9',
+            b'vs l',
+            struct.pack('<I', (0 if self.top_hours_graph is None or self.top_hours_graph is False else 1)),
+            b'' if self.top_hours_graph is None or self.top_hours_graph is False else (self.top_hours_graph._bytes()),
             self.revenue_graph._bytes(),
             self.status._bytes(),
             struct.pack('<d', self.usd_rate),
@@ -1061,10 +1279,16 @@ class StarsRevenueStats(TLObject):
 
     @classmethod
     def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        if flags & 1:
+            _top_hours_graph = reader.tgread_object()
+        else:
+            _top_hours_graph = None
         _revenue_graph = reader.tgread_object()
         _status = reader.tgread_object()
         _usd_rate = reader.read_double()
-        return cls(revenue_graph=_revenue_graph, status=_status, usd_rate=_usd_rate)
+        return cls(revenue_graph=_revenue_graph, status=_status, usd_rate=_usd_rate, top_hours_graph=_top_hours_graph)
 
 
 class StarsRevenueWithdrawalUrl(TLObject):
@@ -1246,27 +1470,30 @@ class SuggestedStarRefBots(TLObject):
 
 
 class UniqueStarGift(TLObject):
-    CONSTRUCTOR_ID = 0xcaa2f60b
+    CONSTRUCTOR_ID = 0x416c56e8
     SUBCLASS_OF_ID = 0x78b0c5fb
 
-    def __init__(self, gift: 'TypeStarGift', users: List['TypeUser']):
+    def __init__(self, gift: 'TypeStarGift', chats: List['TypeChat'], users: List['TypeUser']):
         """
         Constructor for payments.UniqueStarGift: Instance of UniqueStarGift.
         """
         self.gift = gift
+        self.chats = chats
         self.users = users
 
     def to_dict(self):
         return {
             '_': 'UniqueStarGift',
             'gift': self.gift.to_dict() if isinstance(self.gift, TLObject) else self.gift,
+            'chats': [] if self.chats is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.chats],
             'users': [] if self.users is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.users]
         }
 
     def _bytes(self):
         return b''.join((
-            b'\x0b\xf6\xa2\xca',
+            b'\xe8VlA',
             self.gift._bytes(),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.chats)),b''.join(x._bytes() for x in self.chats),
             b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.users)),b''.join(x._bytes() for x in self.users),
         ))
 
@@ -1274,12 +1501,122 @@ class UniqueStarGift(TLObject):
     def from_reader(cls, reader):
         _gift = reader.tgread_object()
         reader.read_int()
+        _chats = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _chats.append(_x)
+
+        reader.read_int()
         _users = []
         for _ in range(reader.read_int()):
             _x = reader.tgread_object()
             _users.append(_x)
 
-        return cls(gift=_gift, users=_users)
+        return cls(gift=_gift, chats=_chats, users=_users)
+
+
+class UniqueStarGiftValueInfo(TLObject):
+    CONSTRUCTOR_ID = 0x512fe446
+    SUBCLASS_OF_ID = 0x16355bc4
+
+    def __init__(self, currency: str, value: int, initial_sale_date: Optional[datetime], initial_sale_stars: int, initial_sale_price: int, last_sale_on_fragment: Optional[bool]=None, value_is_average: Optional[bool]=None, last_sale_date: Optional[datetime]=None, last_sale_price: Optional[int]=None, floor_price: Optional[int]=None, average_price: Optional[int]=None, listed_count: Optional[int]=None, fragment_listed_count: Optional[int]=None, fragment_listed_url: Optional[str]=None):
+        """
+        Constructor for payments.UniqueStarGiftValueInfo: Instance of UniqueStarGiftValueInfo.
+        """
+        self.currency = currency
+        self.value = value
+        self.initial_sale_date = initial_sale_date
+        self.initial_sale_stars = initial_sale_stars
+        self.initial_sale_price = initial_sale_price
+        self.last_sale_on_fragment = last_sale_on_fragment
+        self.value_is_average = value_is_average
+        self.last_sale_date = last_sale_date
+        self.last_sale_price = last_sale_price
+        self.floor_price = floor_price
+        self.average_price = average_price
+        self.listed_count = listed_count
+        self.fragment_listed_count = fragment_listed_count
+        self.fragment_listed_url = fragment_listed_url
+
+    def to_dict(self):
+        return {
+            '_': 'UniqueStarGiftValueInfo',
+            'currency': self.currency,
+            'value': self.value,
+            'initial_sale_date': self.initial_sale_date,
+            'initial_sale_stars': self.initial_sale_stars,
+            'initial_sale_price': self.initial_sale_price,
+            'last_sale_on_fragment': self.last_sale_on_fragment,
+            'value_is_average': self.value_is_average,
+            'last_sale_date': self.last_sale_date,
+            'last_sale_price': self.last_sale_price,
+            'floor_price': self.floor_price,
+            'average_price': self.average_price,
+            'listed_count': self.listed_count,
+            'fragment_listed_count': self.fragment_listed_count,
+            'fragment_listed_url': self.fragment_listed_url
+        }
+
+    def _bytes(self):
+        assert ((self.last_sale_date or self.last_sale_date is not None) and (self.last_sale_price or self.last_sale_price is not None)) or ((self.last_sale_date is None or self.last_sale_date is False) and (self.last_sale_price is None or self.last_sale_price is False)), 'last_sale_date, last_sale_price parameters must all be False-y (like None) or all me True-y'
+        assert ((self.fragment_listed_count or self.fragment_listed_count is not None) and (self.fragment_listed_url or self.fragment_listed_url is not None)) or ((self.fragment_listed_count is None or self.fragment_listed_count is False) and (self.fragment_listed_url is None or self.fragment_listed_url is False)), 'fragment_listed_count, fragment_listed_url parameters must all be False-y (like None) or all me True-y'
+        return b''.join((
+            b'F\xe4/Q',
+            struct.pack('<I', (0 if self.last_sale_on_fragment is None or self.last_sale_on_fragment is False else 2) | (0 if self.value_is_average is None or self.value_is_average is False else 64) | (0 if self.last_sale_date is None or self.last_sale_date is False else 1) | (0 if self.last_sale_price is None or self.last_sale_price is False else 1) | (0 if self.floor_price is None or self.floor_price is False else 4) | (0 if self.average_price is None or self.average_price is False else 8) | (0 if self.listed_count is None or self.listed_count is False else 16) | (0 if self.fragment_listed_count is None or self.fragment_listed_count is False else 32) | (0 if self.fragment_listed_url is None or self.fragment_listed_url is False else 32)),
+            self.serialize_bytes(self.currency),
+            struct.pack('<q', self.value),
+            self.serialize_datetime(self.initial_sale_date),
+            struct.pack('<q', self.initial_sale_stars),
+            struct.pack('<q', self.initial_sale_price),
+            b'' if self.last_sale_date is None or self.last_sale_date is False else (self.serialize_datetime(self.last_sale_date)),
+            b'' if self.last_sale_price is None or self.last_sale_price is False else (struct.pack('<q', self.last_sale_price)),
+            b'' if self.floor_price is None or self.floor_price is False else (struct.pack('<q', self.floor_price)),
+            b'' if self.average_price is None or self.average_price is False else (struct.pack('<q', self.average_price)),
+            b'' if self.listed_count is None or self.listed_count is False else (struct.pack('<i', self.listed_count)),
+            b'' if self.fragment_listed_count is None or self.fragment_listed_count is False else (struct.pack('<i', self.fragment_listed_count)),
+            b'' if self.fragment_listed_url is None or self.fragment_listed_url is False else (self.serialize_bytes(self.fragment_listed_url)),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        _last_sale_on_fragment = bool(flags & 2)
+        _value_is_average = bool(flags & 64)
+        _currency = reader.tgread_string()
+        _value = reader.read_long()
+        _initial_sale_date = reader.tgread_date()
+        _initial_sale_stars = reader.read_long()
+        _initial_sale_price = reader.read_long()
+        if flags & 1:
+            _last_sale_date = reader.tgread_date()
+        else:
+            _last_sale_date = None
+        if flags & 1:
+            _last_sale_price = reader.read_long()
+        else:
+            _last_sale_price = None
+        if flags & 4:
+            _floor_price = reader.read_long()
+        else:
+            _floor_price = None
+        if flags & 8:
+            _average_price = reader.read_long()
+        else:
+            _average_price = None
+        if flags & 16:
+            _listed_count = reader.read_int()
+        else:
+            _listed_count = None
+        if flags & 32:
+            _fragment_listed_count = reader.read_int()
+        else:
+            _fragment_listed_count = None
+        if flags & 32:
+            _fragment_listed_url = reader.tgread_string()
+        else:
+            _fragment_listed_url = None
+        return cls(currency=_currency, value=_value, initial_sale_date=_initial_sale_date, initial_sale_stars=_initial_sale_stars, initial_sale_price=_initial_sale_price, last_sale_on_fragment=_last_sale_on_fragment, value_is_average=_value_is_average, last_sale_date=_last_sale_date, last_sale_price=_last_sale_price, floor_price=_floor_price, average_price=_average_price, listed_count=_listed_count, fragment_listed_count=_fragment_listed_count, fragment_listed_url=_fragment_listed_url)
 
 
 class ValidatedRequestedInfo(TLObject):

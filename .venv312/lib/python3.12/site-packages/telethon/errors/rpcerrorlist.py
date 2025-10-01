@@ -4753,6 +4753,24 @@ class YouBlockedUserError(BadRequestError):
         return type(self), (self.request,)
 
 
+class FrozenMethodInvalidError(FloodError):
+    def __init__(self, request):
+        self.request = request
+        super(Exception, self).__init__('You tried to use a method that is not available for frozen accounts' + self._fmt_request(self.request))
+
+    def __reduce__(self):
+        return type(self), (self.request,)
+
+
+class FrozenParticipantMissingError(BadRequestError):
+    def __init__(self, request):
+        self.request = request
+        super(Exception, self).__init__("Your account is frozen and can't access the chat" + self._fmt_request(self.request))
+
+    def __reduce__(self):
+        return type(self), (self.request,)
+
+
 rpc_errors_dict = {
     'ABOUT_TOO_LONG': AboutTooLongError,
     'ACCESS_TOKEN_EXPIRED': AccessTokenExpiredError,
@@ -5262,6 +5280,8 @@ rpc_errors_dict = {
     'WEBPUSH_TOKEN_INVALID': WebpushTokenInvalidError,
     'WORKER_BUSY_TOO_LONG_RETRY': WorkerBusyTooLongRetryError,
     'YOU_BLOCKED_USER': YouBlockedUserError,
+    'FROZEN_METHOD_INVALID': FrozenMethodInvalidError,
+    'FROZEN_PARTICIPANT_MISSING': FrozenParticipantMissingError,
 }
 
 rpc_errors_re = (

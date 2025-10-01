@@ -5,8 +5,64 @@ import os
 import struct
 from datetime import datetime
 if TYPE_CHECKING:
-    from ...tl.types import TypeChat, TypeFoundStory, TypePeerStories, TypeStoriesStealthMode, TypeStoryItem, TypeStoryReaction, TypeStoryView, TypeStoryViews, TypeUser
+    from ...tl.types import TypeChat, TypeFoundStory, TypePeerStories, TypeStoriesStealthMode, TypeStoryAlbum, TypeStoryItem, TypeStoryReaction, TypeStoryView, TypeStoryViews, TypeUser
 
+
+
+class Albums(TLObject):
+    CONSTRUCTOR_ID = 0xc3987a3a
+    SUBCLASS_OF_ID = 0x5a73d39
+
+    def __init__(self, hash: int, albums: List['TypeStoryAlbum']):
+        """
+        Constructor for stories.Albums: Instance of either AlbumsNotModified, Albums.
+        """
+        self.hash = hash
+        self.albums = albums
+
+    def to_dict(self):
+        return {
+            '_': 'Albums',
+            'hash': self.hash,
+            'albums': [] if self.albums is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.albums]
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b':z\x98\xc3',
+            struct.pack('<q', self.hash),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.albums)),b''.join(x._bytes() for x in self.albums),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _hash = reader.read_long()
+        reader.read_int()
+        _albums = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _albums.append(_x)
+
+        return cls(hash=_hash, albums=_albums)
+
+
+class AlbumsNotModified(TLObject):
+    CONSTRUCTOR_ID = 0x564edaeb
+    SUBCLASS_OF_ID = 0x5a73d39
+
+    def to_dict(self):
+        return {
+            '_': 'AlbumsNotModified'
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xeb\xdaNV',
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        return cls()
 
 
 class AllStories(TLObject):
@@ -111,6 +167,34 @@ class AllStoriesNotModified(TLObject):
         _state = reader.tgread_string()
         _stealth_mode = reader.tgread_object()
         return cls(state=_state, stealth_mode=_stealth_mode)
+
+
+class CanSendStoryCount(TLObject):
+    CONSTRUCTOR_ID = 0xc387c04e
+    SUBCLASS_OF_ID = 0xcb53a298
+
+    def __init__(self, count_remains: int):
+        """
+        Constructor for stories.CanSendStoryCount: Instance of CanSendStoryCount.
+        """
+        self.count_remains = count_remains
+
+    def to_dict(self):
+        return {
+            '_': 'CanSendStoryCount',
+            'count_remains': self.count_remains
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'N\xc0\x87\xc3',
+            struct.pack('<i', self.count_remains),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _count_remains = reader.read_int()
+        return cls(count_remains=_count_remains)
 
 
 class FoundStories(TLObject):

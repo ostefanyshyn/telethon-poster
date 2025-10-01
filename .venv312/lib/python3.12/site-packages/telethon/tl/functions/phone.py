@@ -132,35 +132,65 @@ class ConfirmCallRequest(TLRequest):
 
 
 class CreateConferenceCallRequest(TLRequest):
-    CONSTRUCTOR_ID = 0xdfc909ab
-    SUBCLASS_OF_ID = 0xd48afe4f
+    CONSTRUCTOR_ID = 0x7d0444bb
+    SUBCLASS_OF_ID = 0x8af52aac
 
-    def __init__(self, peer: 'TypeInputPhoneCall', key_fingerprint: int):
+    def __init__(self, muted: Optional[bool]=None, video_stopped: Optional[bool]=None, join: Optional[bool]=None, random_id: int=None, public_key: Optional[int]=None, block: Optional[bytes]=None, params: Optional['TypeDataJSON']=None):
         """
-        :returns phone.PhoneCall: Instance of PhoneCall.
+        :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
         """
-        self.peer = peer
-        self.key_fingerprint = key_fingerprint
+        self.muted = muted
+        self.video_stopped = video_stopped
+        self.join = join
+        self.random_id = random_id if random_id is not None else int.from_bytes(os.urandom(4), 'big', signed=True)
+        self.public_key = public_key
+        self.block = block
+        self.params = params
 
     def to_dict(self):
         return {
             '_': 'CreateConferenceCallRequest',
-            'peer': self.peer.to_dict() if isinstance(self.peer, TLObject) else self.peer,
-            'key_fingerprint': self.key_fingerprint
+            'muted': self.muted,
+            'video_stopped': self.video_stopped,
+            'join': self.join,
+            'random_id': self.random_id,
+            'public_key': self.public_key,
+            'block': self.block,
+            'params': self.params.to_dict() if isinstance(self.params, TLObject) else self.params
         }
 
     def _bytes(self):
+        assert ((self.join or self.join is not None) and (self.public_key or self.public_key is not None) and (self.block or self.block is not None) and (self.params or self.params is not None)) or ((self.join is None or self.join is False) and (self.public_key is None or self.public_key is False) and (self.block is None or self.block is False) and (self.params is None or self.params is False)), 'join, public_key, block, params parameters must all be False-y (like None) or all me True-y'
         return b''.join((
-            b'\xab\t\xc9\xdf',
-            self.peer._bytes(),
-            struct.pack('<q', self.key_fingerprint),
+            b'\xbbD\x04}',
+            struct.pack('<I', (0 if self.muted is None or self.muted is False else 1) | (0 if self.video_stopped is None or self.video_stopped is False else 4) | (0 if self.join is None or self.join is False else 8) | (0 if self.public_key is None or self.public_key is False else 8) | (0 if self.block is None or self.block is False else 8) | (0 if self.params is None or self.params is False else 8)),
+            struct.pack('<i', self.random_id),
+            b'' if self.public_key is None or self.public_key is False else (self.public_key.to_bytes(32, 'little', signed=True)),
+            b'' if self.block is None or self.block is False else (self.serialize_bytes(self.block)),
+            b'' if self.params is None or self.params is False else (self.params._bytes()),
         ))
 
     @classmethod
     def from_reader(cls, reader):
-        _peer = reader.tgread_object()
-        _key_fingerprint = reader.read_long()
-        return cls(peer=_peer, key_fingerprint=_key_fingerprint)
+        flags = reader.read_int()
+
+        _muted = bool(flags & 1)
+        _video_stopped = bool(flags & 4)
+        _join = bool(flags & 8)
+        _random_id = reader.read_int()
+        if flags & 8:
+            _public_key = reader.read_large_int(bits=256)
+        else:
+            _public_key = None
+        if flags & 8:
+            _block = reader.tgread_bytes()
+        else:
+            _block = None
+        if flags & 8:
+            _params = reader.tgread_object()
+        else:
+            _params = None
+        return cls(muted=_muted, video_stopped=_video_stopped, join=_join, random_id=_random_id, public_key=_public_key, block=_block, params=_params)
 
 
 class CreateGroupCallRequest(TLRequest):
@@ -216,6 +246,87 @@ class CreateGroupCallRequest(TLRequest):
         else:
             _schedule_date = None
         return cls(peer=_peer, rtmp_stream=_rtmp_stream, random_id=_random_id, title=_title, schedule_date=_schedule_date)
+
+
+class DeclineConferenceCallInviteRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x3c479971
+    SUBCLASS_OF_ID = 0x8af52aac
+
+    def __init__(self, msg_id: int):
+        """
+        :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
+        """
+        self.msg_id = msg_id
+
+    def to_dict(self):
+        return {
+            '_': 'DeclineConferenceCallInviteRequest',
+            'msg_id': self.msg_id
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'q\x99G<',
+            struct.pack('<i', self.msg_id),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _msg_id = reader.read_int()
+        return cls(msg_id=_msg_id)
+
+
+class DeleteConferenceCallParticipantsRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x8ca60525
+    SUBCLASS_OF_ID = 0x8af52aac
+
+    def __init__(self, call: 'TypeInputGroupCall', ids: List[int], block: bytes, only_left: Optional[bool]=None, kick: Optional[bool]=None):
+        """
+        :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
+        """
+        self.call = call
+        self.ids = ids
+        self.block = block
+        self.only_left = only_left
+        self.kick = kick
+
+    async def resolve(self, client, utils):
+        self.call = utils.get_input_group_call(self.call)
+
+    def to_dict(self):
+        return {
+            '_': 'DeleteConferenceCallParticipantsRequest',
+            'call': self.call.to_dict() if isinstance(self.call, TLObject) else self.call,
+            'ids': [] if self.ids is None else self.ids[:],
+            'block': self.block,
+            'only_left': self.only_left,
+            'kick': self.kick
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'%\x05\xa6\x8c',
+            struct.pack('<I', (0 if self.only_left is None or self.only_left is False else 1) | (0 if self.kick is None or self.kick is False else 2)),
+            self.call._bytes(),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.ids)),b''.join(struct.pack('<q', x) for x in self.ids),
+            self.serialize_bytes(self.block),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        _only_left = bool(flags & 1)
+        _kick = bool(flags & 2)
+        _call = reader.tgread_object()
+        reader.read_int()
+        _ids = []
+        for _ in range(reader.read_int()):
+            _x = reader.read_long()
+            _ids.append(_x)
+
+        _block = reader.tgread_bytes()
+        return cls(call=_call, ids=_ids, block=_block, only_left=_only_left, kick=_kick)
 
 
 class DiscardCallRequest(TLRequest):
@@ -502,6 +613,49 @@ class GetGroupCallRequest(TLRequest):
         return cls(call=_call, limit=_limit)
 
 
+class GetGroupCallChainBlocksRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xee9f88a6
+    SUBCLASS_OF_ID = 0x8af52aac
+
+    def __init__(self, call: 'TypeInputGroupCall', sub_chain_id: int, offset: int, limit: int):
+        """
+        :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
+        """
+        self.call = call
+        self.sub_chain_id = sub_chain_id
+        self.offset = offset
+        self.limit = limit
+
+    async def resolve(self, client, utils):
+        self.call = utils.get_input_group_call(self.call)
+
+    def to_dict(self):
+        return {
+            '_': 'GetGroupCallChainBlocksRequest',
+            'call': self.call.to_dict() if isinstance(self.call, TLObject) else self.call,
+            'sub_chain_id': self.sub_chain_id,
+            'offset': self.offset,
+            'limit': self.limit
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xa6\x88\x9f\xee',
+            self.call._bytes(),
+            struct.pack('<i', self.sub_chain_id),
+            struct.pack('<i', self.offset),
+            struct.pack('<i', self.limit),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _call = reader.tgread_object()
+        _sub_chain_id = reader.read_int()
+        _offset = reader.read_int()
+        _limit = reader.read_int()
+        return cls(call=_call, sub_chain_id=_sub_chain_id, offset=_offset, limit=_limit)
+
+
 class GetGroupCallJoinAsRequest(TLRequest):
     CONSTRUCTOR_ID = 0xef7c213a
     SUBCLASS_OF_ID = 0xb4b770fb
@@ -661,6 +815,48 @@ class GetGroupParticipantsRequest(TLRequest):
         return cls(call=_call, ids=_ids, sources=_sources, offset=_offset, limit=_limit)
 
 
+class InviteConferenceCallParticipantRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xbcf22685
+    SUBCLASS_OF_ID = 0x8af52aac
+
+    def __init__(self, call: 'TypeInputGroupCall', user_id: 'TypeInputUser', video: Optional[bool]=None):
+        """
+        :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
+        """
+        self.call = call
+        self.user_id = user_id
+        self.video = video
+
+    async def resolve(self, client, utils):
+        self.call = utils.get_input_group_call(self.call)
+        self.user_id = utils.get_input_user(await client.get_input_entity(self.user_id))
+
+    def to_dict(self):
+        return {
+            '_': 'InviteConferenceCallParticipantRequest',
+            'call': self.call.to_dict() if isinstance(self.call, TLObject) else self.call,
+            'user_id': self.user_id.to_dict() if isinstance(self.user_id, TLObject) else self.user_id,
+            'video': self.video
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\x85&\xf2\xbc',
+            struct.pack('<I', (0 if self.video is None or self.video is False else 1)),
+            self.call._bytes(),
+            self.user_id._bytes(),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        _video = bool(flags & 1)
+        _call = reader.tgread_object()
+        _user_id = reader.tgread_object()
+        return cls(call=_call, user_id=_user_id, video=_video)
+
+
 class InviteToGroupCallRequest(TLRequest):
     CONSTRUCTOR_ID = 0x7b393160
     SUBCLASS_OF_ID = 0x8af52aac
@@ -707,10 +903,10 @@ class InviteToGroupCallRequest(TLRequest):
 
 
 class JoinGroupCallRequest(TLRequest):
-    CONSTRUCTOR_ID = 0xd61e1df3
+    CONSTRUCTOR_ID = 0x8fb53057
     SUBCLASS_OF_ID = 0x8af52aac
 
-    def __init__(self, call: 'TypeInputGroupCall', join_as: 'TypeInputPeer', params: 'TypeDataJSON', muted: Optional[bool]=None, video_stopped: Optional[bool]=None, invite_hash: Optional[str]=None, key_fingerprint: Optional[int]=None):
+    def __init__(self, call: 'TypeInputGroupCall', join_as: 'TypeInputPeer', params: 'TypeDataJSON', muted: Optional[bool]=None, video_stopped: Optional[bool]=None, invite_hash: Optional[str]=None, public_key: Optional[int]=None, block: Optional[bytes]=None):
         """
         :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
         """
@@ -720,7 +916,8 @@ class JoinGroupCallRequest(TLRequest):
         self.muted = muted
         self.video_stopped = video_stopped
         self.invite_hash = invite_hash
-        self.key_fingerprint = key_fingerprint
+        self.public_key = public_key
+        self.block = block
 
     async def resolve(self, client, utils):
         self.call = utils.get_input_group_call(self.call)
@@ -735,17 +932,20 @@ class JoinGroupCallRequest(TLRequest):
             'muted': self.muted,
             'video_stopped': self.video_stopped,
             'invite_hash': self.invite_hash,
-            'key_fingerprint': self.key_fingerprint
+            'public_key': self.public_key,
+            'block': self.block
         }
 
     def _bytes(self):
+        assert ((self.public_key or self.public_key is not None) and (self.block or self.block is not None)) or ((self.public_key is None or self.public_key is False) and (self.block is None or self.block is False)), 'public_key, block parameters must all be False-y (like None) or all me True-y'
         return b''.join((
-            b'\xf3\x1d\x1e\xd6',
-            struct.pack('<I', (0 if self.muted is None or self.muted is False else 1) | (0 if self.video_stopped is None or self.video_stopped is False else 4) | (0 if self.invite_hash is None or self.invite_hash is False else 2) | (0 if self.key_fingerprint is None or self.key_fingerprint is False else 8)),
+            b'W0\xb5\x8f',
+            struct.pack('<I', (0 if self.muted is None or self.muted is False else 1) | (0 if self.video_stopped is None or self.video_stopped is False else 4) | (0 if self.invite_hash is None or self.invite_hash is False else 2) | (0 if self.public_key is None or self.public_key is False else 8) | (0 if self.block is None or self.block is False else 8)),
             self.call._bytes(),
             self.join_as._bytes(),
             b'' if self.invite_hash is None or self.invite_hash is False else (self.serialize_bytes(self.invite_hash)),
-            b'' if self.key_fingerprint is None or self.key_fingerprint is False else (struct.pack('<q', self.key_fingerprint)),
+            b'' if self.public_key is None or self.public_key is False else (self.public_key.to_bytes(32, 'little', signed=True)),
+            b'' if self.block is None or self.block is False else (self.serialize_bytes(self.block)),
             self.params._bytes(),
         ))
 
@@ -762,11 +962,15 @@ class JoinGroupCallRequest(TLRequest):
         else:
             _invite_hash = None
         if flags & 8:
-            _key_fingerprint = reader.read_long()
+            _public_key = reader.read_large_int(bits=256)
         else:
-            _key_fingerprint = None
+            _public_key = None
+        if flags & 8:
+            _block = reader.tgread_bytes()
+        else:
+            _block = None
         _params = reader.tgread_object()
-        return cls(call=_call, join_as=_join_as, params=_params, muted=_muted, video_stopped=_video_stopped, invite_hash=_invite_hash, key_fingerprint=_key_fingerprint)
+        return cls(call=_call, join_as=_join_as, params=_params, muted=_muted, video_stopped=_video_stopped, invite_hash=_invite_hash, public_key=_public_key, block=_block)
 
 
 class JoinGroupCallPresentationRequest(TLRequest):
@@ -899,10 +1103,10 @@ class ReceivedCallRequest(TLRequest):
 
 
 class RequestCallRequest(TLRequest):
-    CONSTRUCTOR_ID = 0xa6c4600c
+    CONSTRUCTOR_ID = 0x42ff96ed
     SUBCLASS_OF_ID = 0xd48afe4f
 
-    def __init__(self, user_id: 'TypeInputUser', g_a_hash: bytes, protocol: 'TypePhoneCallProtocol', video: Optional[bool]=None, conference_call: Optional['TypeInputGroupCall']=None, random_id: int=None):
+    def __init__(self, user_id: 'TypeInputUser', g_a_hash: bytes, protocol: 'TypePhoneCallProtocol', video: Optional[bool]=None, random_id: int=None):
         """
         :returns phone.PhoneCall: Instance of PhoneCall.
         """
@@ -910,13 +1114,10 @@ class RequestCallRequest(TLRequest):
         self.g_a_hash = g_a_hash
         self.protocol = protocol
         self.video = video
-        self.conference_call = conference_call
         self.random_id = random_id if random_id is not None else int.from_bytes(os.urandom(4), 'big', signed=True)
 
     async def resolve(self, client, utils):
         self.user_id = utils.get_input_user(await client.get_input_entity(self.user_id))
-        if self.conference_call:
-            self.conference_call = utils.get_input_group_call(self.conference_call)
 
     def to_dict(self):
         return {
@@ -925,16 +1126,14 @@ class RequestCallRequest(TLRequest):
             'g_a_hash': self.g_a_hash,
             'protocol': self.protocol.to_dict() if isinstance(self.protocol, TLObject) else self.protocol,
             'video': self.video,
-            'conference_call': self.conference_call.to_dict() if isinstance(self.conference_call, TLObject) else self.conference_call,
             'random_id': self.random_id
         }
 
     def _bytes(self):
         return b''.join((
-            b'\x0c`\xc4\xa6',
-            struct.pack('<I', (0 if self.video is None or self.video is False else 1) | (0 if self.conference_call is None or self.conference_call is False else 2)),
+            b'\xed\x96\xffB',
+            struct.pack('<I', (0 if self.video is None or self.video is False else 1)),
             self.user_id._bytes(),
-            b'' if self.conference_call is None or self.conference_call is False else (self.conference_call._bytes()),
             struct.pack('<i', self.random_id),
             self.serialize_bytes(self.g_a_hash),
             self.protocol._bytes(),
@@ -946,14 +1145,10 @@ class RequestCallRequest(TLRequest):
 
         _video = bool(flags & 1)
         _user_id = reader.tgread_object()
-        if flags & 2:
-            _conference_call = reader.tgread_object()
-        else:
-            _conference_call = None
         _random_id = reader.read_int()
         _g_a_hash = reader.tgread_bytes()
         _protocol = reader.tgread_object()
-        return cls(user_id=_user_id, g_a_hash=_g_a_hash, protocol=_protocol, video=_video, conference_call=_conference_call, random_id=_random_id)
+        return cls(user_id=_user_id, g_a_hash=_g_a_hash, protocol=_protocol, video=_video, random_id=_random_id)
 
 
 class SaveCallDebugRequest(TLRequest):
@@ -1054,6 +1249,41 @@ class SaveDefaultGroupCallJoinAsRequest(TLRequest):
         _peer = reader.tgread_object()
         _join_as = reader.tgread_object()
         return cls(peer=_peer, join_as=_join_as)
+
+
+class SendConferenceCallBroadcastRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xc6701900
+    SUBCLASS_OF_ID = 0x8af52aac
+
+    def __init__(self, call: 'TypeInputGroupCall', block: bytes):
+        """
+        :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
+        """
+        self.call = call
+        self.block = block
+
+    async def resolve(self, client, utils):
+        self.call = utils.get_input_group_call(self.call)
+
+    def to_dict(self):
+        return {
+            '_': 'SendConferenceCallBroadcastRequest',
+            'call': self.call.to_dict() if isinstance(self.call, TLObject) else self.call,
+            'block': self.block
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\x00\x19p\xc6',
+            self.call._bytes(),
+            self.serialize_bytes(self.block),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _call = reader.tgread_object()
+        _block = reader.tgread_bytes()
+        return cls(call=_call, block=_block)
 
 
 class SendSignalingDataRequest(TLRequest):

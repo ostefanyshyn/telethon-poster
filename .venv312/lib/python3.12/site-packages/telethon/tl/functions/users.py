@@ -6,7 +6,7 @@ import os
 import struct
 from datetime import datetime
 if TYPE_CHECKING:
-    from ...tl.types import TypeInputUser, TypeSecureValueError
+    from ...tl.types import TypeInputDocument, TypeInputUser, TypeSecureValueError
 
 
 
@@ -79,6 +79,94 @@ class GetRequirementsToContactRequest(TLRequest):
             _id.append(_x)
 
         return cls(id=_id)
+
+
+class GetSavedMusicRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x788d7fe3
+    SUBCLASS_OF_ID = 0xf813ae37
+
+    def __init__(self, id: 'TypeInputUser', offset: int, limit: int, hash: int):
+        """
+        :returns users.SavedMusic: Instance of either SavedMusicNotModified, SavedMusic.
+        """
+        self.id = id
+        self.offset = offset
+        self.limit = limit
+        self.hash = hash
+
+    async def resolve(self, client, utils):
+        self.id = utils.get_input_user(await client.get_input_entity(self.id))
+
+    def to_dict(self):
+        return {
+            '_': 'GetSavedMusicRequest',
+            'id': self.id.to_dict() if isinstance(self.id, TLObject) else self.id,
+            'offset': self.offset,
+            'limit': self.limit,
+            'hash': self.hash
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xe3\x7f\x8dx',
+            self.id._bytes(),
+            struct.pack('<i', self.offset),
+            struct.pack('<i', self.limit),
+            struct.pack('<q', self.hash),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _id = reader.tgread_object()
+        _offset = reader.read_int()
+        _limit = reader.read_int()
+        _hash = reader.read_long()
+        return cls(id=_id, offset=_offset, limit=_limit, hash=_hash)
+
+
+class GetSavedMusicByIDRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x7573a4e9
+    SUBCLASS_OF_ID = 0xf813ae37
+
+    def __init__(self, id: 'TypeInputUser', documents: List['TypeInputDocument']):
+        """
+        :returns users.SavedMusic: Instance of either SavedMusicNotModified, SavedMusic.
+        """
+        self.id = id
+        self.documents = documents
+
+    async def resolve(self, client, utils):
+        self.id = utils.get_input_user(await client.get_input_entity(self.id))
+        _tmp = []
+        for _x in self.documents:
+            _tmp.append(utils.get_input_document(_x))
+
+        self.documents = _tmp
+
+    def to_dict(self):
+        return {
+            '_': 'GetSavedMusicByIDRequest',
+            'id': self.id.to_dict() if isinstance(self.id, TLObject) else self.id,
+            'documents': [] if self.documents is None else [x.to_dict() if isinstance(x, TLObject) else x for x in self.documents]
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xe9\xa4su',
+            self.id._bytes(),
+            b'\x15\xc4\xb5\x1c',struct.pack('<i', len(self.documents)),b''.join(x._bytes() for x in self.documents),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _id = reader.tgread_object()
+        reader.read_int()
+        _documents = []
+        for _ in range(reader.read_int()):
+            _x = reader.tgread_object()
+            _documents.append(_x)
+
+        return cls(id=_id, documents=_documents)
 
 
 class GetUsersRequest(TLRequest):

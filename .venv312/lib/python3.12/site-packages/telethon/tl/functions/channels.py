@@ -6,8 +6,42 @@ import os
 import struct
 from datetime import datetime
 if TYPE_CHECKING:
-    from ...tl.types import TypeChannelAdminLogEventsFilter, TypeChannelParticipantsFilter, TypeChatAdminRights, TypeChatBannedRights, TypeEmojiStatus, TypeInputChannel, TypeInputChatPhoto, TypeInputCheckPasswordSRP, TypeInputGeoPoint, TypeInputMessage, TypeInputPeer, TypeInputStickerSet, TypeInputUser
+    from ...tl.types import TypeChannelAdminLogEventsFilter, TypeChannelParticipantsFilter, TypeChatAdminRights, TypeChatBannedRights, TypeEmojiStatus, TypeInputChannel, TypeInputChatPhoto, TypeInputCheckPasswordSRP, TypeInputGeoPoint, TypeInputMessage, TypeInputPeer, TypeInputStickerSet, TypeInputUser, TypeProfileTab
 
+
+
+class CheckSearchPostsFloodRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x22567115
+    SUBCLASS_OF_ID = 0xc2c0ccc1
+
+    def __init__(self, query: Optional[str]=None):
+        """
+        :returns SearchPostsFlood: Instance of SearchPostsFlood.
+        """
+        self.query = query
+
+    def to_dict(self):
+        return {
+            '_': 'CheckSearchPostsFloodRequest',
+            'query': self.query
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\x15qV"',
+            struct.pack('<I', (0 if self.query is None or self.query is False else 1)),
+            b'' if self.query is None or self.query is False else (self.serialize_bytes(self.query)),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        if flags & 1:
+            _query = reader.tgread_string()
+        else:
+            _query = None
+        return cls(query=_query)
 
 
 class CheckUsernameRequest(TLRequest):
@@ -1151,6 +1185,41 @@ class GetLeftChannelsRequest(TLRequest):
         return cls(offset=_offset)
 
 
+class GetMessageAuthorRequest(TLRequest):
+    CONSTRUCTOR_ID = 0xece2a0e6
+    SUBCLASS_OF_ID = 0x2da17977
+
+    def __init__(self, channel: 'TypeInputChannel', id: int):
+        """
+        :returns User: Instance of either UserEmpty, User.
+        """
+        self.channel = channel
+        self.id = id
+
+    async def resolve(self, client, utils):
+        self.channel = utils.get_input_channel(await client.get_input_entity(self.channel))
+
+    def to_dict(self):
+        return {
+            '_': 'GetMessageAuthorRequest',
+            'channel': self.channel.to_dict() if isinstance(self.channel, TLObject) else self.channel,
+            'id': self.id
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xe6\xa0\xe2\xec',
+            self.channel._bytes(),
+            struct.pack('<I', self.id),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _channel = reader.tgread_object()
+        _id = reader.read_int(signed=False)
+        return cls(channel=_channel, id=_id)
+
+
 class GetMessagesRequest(TLRequest):
     CONSTRUCTOR_ID = 0xad8c9a23
     SUBCLASS_OF_ID = 0xd4b40b5e
@@ -1700,18 +1769,20 @@ class RestrictSponsoredMessagesRequest(TLRequest):
 
 
 class SearchPostsRequest(TLRequest):
-    CONSTRUCTOR_ID = 0xd19f987b
+    CONSTRUCTOR_ID = 0xf2c4f24d
     SUBCLASS_OF_ID = 0xd4b40b5e
 
-    def __init__(self, hashtag: str, offset_rate: int, offset_peer: 'TypeInputPeer', offset_id: int, limit: int):
+    def __init__(self, offset_rate: int, offset_peer: 'TypeInputPeer', offset_id: int, limit: int, hashtag: Optional[str]=None, query: Optional[str]=None, allow_paid_stars: Optional[int]=None):
         """
         :returns messages.Messages: Instance of either Messages, MessagesSlice, ChannelMessages, MessagesNotModified.
         """
-        self.hashtag = hashtag
         self.offset_rate = offset_rate
         self.offset_peer = offset_peer
         self.offset_id = offset_id
         self.limit = limit
+        self.hashtag = hashtag
+        self.query = query
+        self.allow_paid_stars = allow_paid_stars
 
     async def resolve(self, client, utils):
         self.offset_peer = utils.get_input_peer(await client.get_input_entity(self.offset_peer))
@@ -1719,31 +1790,49 @@ class SearchPostsRequest(TLRequest):
     def to_dict(self):
         return {
             '_': 'SearchPostsRequest',
-            'hashtag': self.hashtag,
             'offset_rate': self.offset_rate,
             'offset_peer': self.offset_peer.to_dict() if isinstance(self.offset_peer, TLObject) else self.offset_peer,
             'offset_id': self.offset_id,
-            'limit': self.limit
+            'limit': self.limit,
+            'hashtag': self.hashtag,
+            'query': self.query,
+            'allow_paid_stars': self.allow_paid_stars
         }
 
     def _bytes(self):
         return b''.join((
-            b'{\x98\x9f\xd1',
-            self.serialize_bytes(self.hashtag),
+            b'M\xf2\xc4\xf2',
+            struct.pack('<I', (0 if self.hashtag is None or self.hashtag is False else 1) | (0 if self.query is None or self.query is False else 2) | (0 if self.allow_paid_stars is None or self.allow_paid_stars is False else 4)),
+            b'' if self.hashtag is None or self.hashtag is False else (self.serialize_bytes(self.hashtag)),
+            b'' if self.query is None or self.query is False else (self.serialize_bytes(self.query)),
             struct.pack('<i', self.offset_rate),
             self.offset_peer._bytes(),
             struct.pack('<i', self.offset_id),
             struct.pack('<i', self.limit),
+            b'' if self.allow_paid_stars is None or self.allow_paid_stars is False else (struct.pack('<q', self.allow_paid_stars)),
         ))
 
     @classmethod
     def from_reader(cls, reader):
-        _hashtag = reader.tgread_string()
+        flags = reader.read_int()
+
+        if flags & 1:
+            _hashtag = reader.tgread_string()
+        else:
+            _hashtag = None
+        if flags & 2:
+            _query = reader.tgread_string()
+        else:
+            _query = None
         _offset_rate = reader.read_int()
         _offset_peer = reader.tgread_object()
         _offset_id = reader.read_int()
         _limit = reader.read_int()
-        return cls(hashtag=_hashtag, offset_rate=_offset_rate, offset_peer=_offset_peer, offset_id=_offset_id, limit=_limit)
+        if flags & 4:
+            _allow_paid_stars = reader.read_long()
+        else:
+            _allow_paid_stars = None
+        return cls(offset_rate=_offset_rate, offset_peer=_offset_peer, offset_id=_offset_id, limit=_limit, hashtag=_hashtag, query=_query, allow_paid_stars=_allow_paid_stars)
 
 
 class SetBoostsToUnblockRestrictionsRequest(TLRequest):
@@ -1852,6 +1941,41 @@ class SetEmojiStickersRequest(TLRequest):
         return cls(channel=_channel, stickerset=_stickerset)
 
 
+class SetMainProfileTabRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x3583fcb1
+    SUBCLASS_OF_ID = 0xf5b399ac
+
+    def __init__(self, channel: 'TypeInputChannel', tab: 'TypeProfileTab'):
+        """
+        :returns Bool: This type has no constructors.
+        """
+        self.channel = channel
+        self.tab = tab
+
+    async def resolve(self, client, utils):
+        self.channel = utils.get_input_channel(await client.get_input_entity(self.channel))
+
+    def to_dict(self):
+        return {
+            '_': 'SetMainProfileTabRequest',
+            'channel': self.channel.to_dict() if isinstance(self.channel, TLObject) else self.channel,
+            'tab': self.tab.to_dict() if isinstance(self.tab, TLObject) else self.tab
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'\xb1\xfc\x835',
+            self.channel._bytes(),
+            self.tab._bytes(),
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _channel = reader.tgread_object()
+        _tab = reader.tgread_object()
+        return cls(channel=_channel, tab=_tab)
+
+
 class SetStickersRequest(TLRequest):
     CONSTRUCTOR_ID = 0xea8ca4f9
     SUBCLASS_OF_ID = 0xf5b399ac
@@ -1922,8 +2046,8 @@ class ToggleAntiSpamRequest(TLRequest):
         return cls(channel=_channel, enabled=_enabled)
 
 
-class ToggleForumRequest(TLRequest):
-    CONSTRUCTOR_ID = 0xa4298b29
+class ToggleAutotranslationRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x167fc0a1
     SUBCLASS_OF_ID = 0x8af52aac
 
     def __init__(self, channel: 'TypeInputChannel', enabled: bool):
@@ -1938,14 +2062,14 @@ class ToggleForumRequest(TLRequest):
 
     def to_dict(self):
         return {
-            '_': 'ToggleForumRequest',
+            '_': 'ToggleAutotranslationRequest',
             'channel': self.channel.to_dict() if isinstance(self.channel, TLObject) else self.channel,
             'enabled': self.enabled
         }
 
     def _bytes(self):
         return b''.join((
-            b')\x8b)\xa4',
+            b'\xa1\xc0\x7f\x16',
             self.channel._bytes(),
             b'\xb5ur\x99' if self.enabled else b'7\x97y\xbc',
         ))
@@ -1955,6 +2079,45 @@ class ToggleForumRequest(TLRequest):
         _channel = reader.tgread_object()
         _enabled = reader.tgread_bool()
         return cls(channel=_channel, enabled=_enabled)
+
+
+class ToggleForumRequest(TLRequest):
+    CONSTRUCTOR_ID = 0x3ff75734
+    SUBCLASS_OF_ID = 0x8af52aac
+
+    def __init__(self, channel: 'TypeInputChannel', enabled: bool, tabs: bool):
+        """
+        :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
+        """
+        self.channel = channel
+        self.enabled = enabled
+        self.tabs = tabs
+
+    async def resolve(self, client, utils):
+        self.channel = utils.get_input_channel(await client.get_input_entity(self.channel))
+
+    def to_dict(self):
+        return {
+            '_': 'ToggleForumRequest',
+            'channel': self.channel.to_dict() if isinstance(self.channel, TLObject) else self.channel,
+            'enabled': self.enabled,
+            'tabs': self.tabs
+        }
+
+    def _bytes(self):
+        return b''.join((
+            b'4W\xf7?',
+            self.channel._bytes(),
+            b'\xb5ur\x99' if self.enabled else b'7\x97y\xbc',
+            b'\xb5ur\x99' if self.tabs else b'7\x97y\xbc',
+        ))
+
+    @classmethod
+    def from_reader(cls, reader):
+        _channel = reader.tgread_object()
+        _enabled = reader.tgread_bool()
+        _tabs = reader.tgread_bool()
+        return cls(channel=_channel, enabled=_enabled, tabs=_tabs)
 
 
 class ToggleJoinRequestRequest(TLRequest):
@@ -2333,15 +2496,16 @@ class UpdateEmojiStatusRequest(TLRequest):
 
 
 class UpdatePaidMessagesPriceRequest(TLRequest):
-    CONSTRUCTOR_ID = 0xfc84653f
+    CONSTRUCTOR_ID = 0x4b12327b
     SUBCLASS_OF_ID = 0x8af52aac
 
-    def __init__(self, channel: 'TypeInputChannel', send_paid_messages_stars: int):
+    def __init__(self, channel: 'TypeInputChannel', send_paid_messages_stars: int, broadcast_messages_allowed: Optional[bool]=None):
         """
         :returns Updates: Instance of either UpdatesTooLong, UpdateShortMessage, UpdateShortChatMessage, UpdateShort, UpdatesCombined, Updates, UpdateShortSentMessage.
         """
         self.channel = channel
         self.send_paid_messages_stars = send_paid_messages_stars
+        self.broadcast_messages_allowed = broadcast_messages_allowed
 
     async def resolve(self, client, utils):
         self.channel = utils.get_input_channel(await client.get_input_entity(self.channel))
@@ -2350,21 +2514,26 @@ class UpdatePaidMessagesPriceRequest(TLRequest):
         return {
             '_': 'UpdatePaidMessagesPriceRequest',
             'channel': self.channel.to_dict() if isinstance(self.channel, TLObject) else self.channel,
-            'send_paid_messages_stars': self.send_paid_messages_stars
+            'send_paid_messages_stars': self.send_paid_messages_stars,
+            'broadcast_messages_allowed': self.broadcast_messages_allowed
         }
 
     def _bytes(self):
         return b''.join((
-            b'?e\x84\xfc',
+            b'{2\x12K',
+            struct.pack('<I', (0 if self.broadcast_messages_allowed is None or self.broadcast_messages_allowed is False else 1)),
             self.channel._bytes(),
             struct.pack('<q', self.send_paid_messages_stars),
         ))
 
     @classmethod
     def from_reader(cls, reader):
+        flags = reader.read_int()
+
+        _broadcast_messages_allowed = bool(flags & 1)
         _channel = reader.tgread_object()
         _send_paid_messages_stars = reader.read_long()
-        return cls(channel=_channel, send_paid_messages_stars=_send_paid_messages_stars)
+        return cls(channel=_channel, send_paid_messages_stars=_send_paid_messages_stars, broadcast_messages_allowed=_broadcast_messages_allowed)
 
 
 class UpdatePinnedForumTopicRequest(TLRequest):
