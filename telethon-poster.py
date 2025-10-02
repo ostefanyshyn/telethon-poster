@@ -9,6 +9,7 @@ import requests
 import io
 import gspread
 import sys
+import logging
 from telethon.network import connection as tl_connection
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -24,8 +25,19 @@ try:
 except Exception:
     _PIL_AVAILABLE = False
 
+
 # Загрузка переменных из .env файла
 load_dotenv()
+
+# Mute noisy Telethon reconnect logs like "Server closed the connection" unless explicitly overridden
+LOG_LEVEL = os.environ.get("TELETHON_LOG_LEVEL", "ERROR").upper()
+try:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("telethon").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
+    logging.getLogger("telethon.network").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
+    logging.getLogger("telethon.network.mtprotosender").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
+except Exception:
+    pass
 
 # Предупреждение о версии Python (Telethon может работать нестабильно на Python 3.13)
 if sys.version_info >= (3, 13):
@@ -156,16 +168,20 @@ for i, acc in enumerate(accounts):
             acc["api_hash"],
             proxy=prx,
             connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
-            request_retries=3,
-            connection_retries=1,
+            request_retries=5,
+            connection_retries=3,
             retry_delay=2,
             timeout=30,
+            flood_sleep_threshold=60,
         )
     )
 
 # Удобные словари доступа по индексу аккаунта
 ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
 CLIENT_BY_INDEX = {acc["index"]: c for c, acc in zip(clients, accounts)}
+
+# Runtime de-duplication guard: prevent repeating sends if Google Sheets flag update lags
+SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР + ТИПОГРАФИКА ---
 
@@ -529,6 +545,10 @@ async def send_post(record, row_idx, pending_indices=None):
     async def _send_to_one(client, acc):
         channel_str = acc.get("channel")
         acc_idx = acc.get("index")
+        # Skip if we already sent this row to this account in this process
+        rt_key = (row_idx, acc_idx)
+        if rt_key in SENT_RUNTIME:
+            return acc_idx, channel_str, True, "runtime-dup-skip"
         if not channel_str:
             return acc_idx, channel_str, False, "no_channel"
 
@@ -566,7 +586,7 @@ async def send_post(record, row_idx, pending_indices=None):
                     worksheet.update_cell(row_idx, col_idx, "TRUE")
                 except Exception as e_upd:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
-
+            SENT_RUNTIME.add(rt_key)
             return acc_idx, channel_str, True, None
 
         except (tl_errors.FloodWaitError, tl_errors.SlowModeWaitError) as e:
@@ -600,6 +620,7 @@ async def send_post(record, row_idx, pending_indices=None):
                         worksheet.update_cell(row_idx, col_idx, "TRUE")
                     except Exception as e_upd:
                         print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
+                SENT_RUNTIME.add(rt_key)
                 return acc_idx, channel_str, True, None
             except Exception as e2:
                 print(f"ОШИБКА: TG{acc_idx} повторная отправка не удалась: {e2}")
@@ -632,6 +653,14 @@ async def main():
     while True:
         try:
             alive = sum(1 for c in clients if c.is_connected())
+            # Proactive reconnect sweep to recover from "Server closed the connection" events
+            for acc_idx, client in CLIENT_BY_INDEX.items():
+                if not client.is_connected():
+                    try:
+                        await client.connect()
+                        print(f"TG{acc_idx} переподключен.")
+                    except Exception as e:
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} не удалось переподключить: {e}")
             print(f"Активных клиентов: {alive}/{len(clients)}")
             print(f"Проверка таблицы... {datetime.now(tz).strftime('%H:%M:%S')}")
             records = worksheet.get_all_records()
