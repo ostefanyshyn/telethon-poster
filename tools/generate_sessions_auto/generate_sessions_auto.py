@@ -207,12 +207,13 @@ async def main():
             fail += 1
     print(f"Успешно: {ok} | Ошибок: {fail}")
 
-    print("\n=== Обновлённые Session String (Telethon) ===")
+    # Вывод в формате: TG{n}_SESSION=<string>
     for idx, phone, s in results:
         if s:
-            print(f"TG{idx} ({phone}) = {s}")
+            print(f"TG{idx}_SESSION={s}")
         else:
-            print(f"TG{idx} ({phone}) = <ошибка, строка не обновлена>")
+            # Комментируем ошибочные строки, чтобы не ломать .env при копипасте
+            print(f"# TG{idx}_SESSION=<ошибка для {phone}>")
 
 if __name__ == "__main__":
     asyncio.run(main())
