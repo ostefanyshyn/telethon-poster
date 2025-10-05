@@ -66,7 +66,7 @@ except Exception:
     print("ОШИБКА: TG_API_ID должен быть числом.")
     exit(1)
 
-for n in range(1, 21):
+for n in range(1, 23):
     session = os.environ.get(f"TG{n}_SESSION")
     channel = os.environ.get(f"TG{n}_CHANNEL")
 
