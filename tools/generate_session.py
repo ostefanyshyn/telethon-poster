@@ -7,8 +7,8 @@ from telethon.errors import SessionPasswordNeededError
 
 
 async def main():
-    api_id = int(input("API_ID: ").strip())
-    api_hash = input("API_HASH: ").strip()
+    api_id = "27190730" #int(input("API_ID: ").strip())
+    api_hash = "b4185638e99213319a46b328a32ee908"  # input("API_HASH: ").strip()
     phone = input("Номер телефона (в формате +380...): ").strip()
 
     client = TelegramClient(StringSession(), api_id, api_hash)

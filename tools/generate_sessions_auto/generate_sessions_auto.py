@@ -89,7 +89,7 @@ def collect_accounts(env: Dict[str, str]) -> Dict[int, Dict[str, str]]:
     Обязательно требуем PHONE, SESSION и все поля прокси.
     """
     groups: Dict[int, Dict[str, str]] = {}
-    rx = re.compile(r"^TG(\d+)_(PHONE|SESSION|SESSIONS|PROXY_TYPE|PROXY_HOST|PROXY_PORT|PROXY_USER|PROXY_PASS|PROXY_RDNS)$")
+    rx = re.compile(r"^TG(\d+)_(PHONE|SESSION|SESSIONS|PROXY_TYPE|PROXY_HOST|PROXY_PORT|PROXY_USER|PROXY_PASS|PROXY_RDNS|API_ID|API_HASH)$")
     for key, val in env.items():
         m = rx.match(key)
         if not m:
@@ -141,34 +141,52 @@ def sanitize_name(phone_or_idx: str) -> str:
 async def start_account(idx: int, api_id: int, api_hash: str, cfg: Dict[str, str]) -> Tuple[int, Optional[str], Optional[str]]:
     """
     Стартуем аккаунт TG<idx>. Возвращаем (idx, phone, new_session_string) или (idx, phone, None) при ошибке.
+    Избегаем интерактива: если сессия не авторизована (например, строка создана с другим API_ID/API_HASH или истекла),
+    просто помечаем ошибку и переходим к следующему аккаунту.
     """
     phone = cfg.get("PHONE", f"TG{idx}")
     name = sanitize_name(phone) or f"TG{idx}"
-    session_string = cfg["SESSION"]
+    session_string = (cfg.get("SESSION") or "").strip()
+    if not session_string:
+        print(f"[TG{idx} | {phone}] ❌ Пустая SESSION — пропуск.")
+        return idx, phone, None
+
     proxy = build_proxy(cfg)
 
-    # ВАЖНО: Telethon-строка — это уже готовая сессия; просто подключаемся через прокси.
     client = TelegramClient(
         session=StringSession(session_string),
         api_id=api_id,
         api_hash=api_hash,
         proxy=proxy,
-        # можно добавить connection/retry/timeout при желании
     )
 
     try:
-        async with client:
-            me = await client.get_me()
-            print(f"[TG{idx} | {phone}] ✅ Запущен: {me.id} @{me.username or me.first_name}")
-            # Обновляем строковую сессию (на случай изменений внутри, например DC/лимиты)
-            refreshed = client.session.save()
-            return idx, phone, refreshed
+        await client.connect()
+        # Не допускаем интерактива: проверяем авторизацию и выходим, если её нет.
+        if not await client.is_user_authorized():
+            msg = "не авторизована"
+            if not api_id or not api_hash:
+                msg += ", и API_ID/API_HASH не заданы"
+            print(f"[TG{idx} | {phone}] ❌ Сессия {msg}. Возможно, несовпадение API_ID/API_HASH с теми, на которых была создана строка, или сессия истекла/отозвана.")
+            return idx, phone, None
+
+        me = await client.get_me()
+        username = getattr(me, "username", None) or getattr(me, "first_name", "?")
+        print(f"[TG{idx} | {phone}] ✅ Запущен: {me.id} @{username}")
+        # Обновляем строковую сессию (на случай внутренних изменений)
+        refreshed = client.session.save()
+        return idx, phone, refreshed
     except RPCError as e:
         print(f"[TG{idx} | {phone}] ❌ RPCError: {e}")
         return idx, phone, None
     except Exception as e:
         print(f"[TG{idx} | {phone}] ❌ Ошибка: {e}")
         return idx, phone, None
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 async def main():
     # 1) конфиг
@@ -176,12 +194,11 @@ async def main():
     print(f"Использую конфиг: {cfg_path}")
     env = load_kv_file(cfg_path)
 
-    # 2) общие API_ID/API_HASH
-    try:
-        api_id = int(env["TG_API_ID"])
-        api_hash = env["TG_API_HASH"]
-    except KeyError as e:
-        raise SystemExit(f"В {cfg_path.name} не найдены TG_API_ID / TG_API_HASH") from e
+    # 2) общие API_ID/API_HASH (используются по умолчанию, можно переопределить per-account)
+    api_id = int(env.get("TG_API_ID", "0") or 0)
+    api_hash = env.get("TG_API_HASH", "")
+    if not api_id or not api_hash:
+        print(f"[WARN] В {cfg_path.name} нет глобальных TG_API_ID/TG_API_HASH. Ожидаются TG<N>_API_ID/TG<N>_API_HASH у аккаунтов.")
 
     # 3) собираем аккаунты
     accounts = collect_accounts(env)
@@ -192,8 +209,10 @@ async def main():
     sem = asyncio.Semaphore(5)
 
     async def guarded(idx: int, cfg: Dict[str, str]):
+        acc_api_id = int(cfg.get("API_ID", api_id) or 0)
+        acc_api_hash = cfg.get("API_HASH", api_hash)
         async with sem:
-            return await start_account(idx, api_id, api_hash, cfg)
+            return await start_account(idx, acc_api_id, acc_api_hash, cfg)
 
     results = await asyncio.gather(*(guarded(idx, cfg) for idx, cfg in accounts.items()))
 
@@ -206,6 +225,8 @@ async def main():
         else:
             fail += 1
     print(f"Успешно: {ok} | Ошибок: {fail}")
+    if fail:
+        print("Подсказка: если часть аккаунтов запрашивает ввод телефона — вероятно, их SESSION создана на другом TG_API_ID/TG_API_HASH. Укажите TG<N>_API_ID/TG<N>_API_HASH или пересоздайте строки на текущих API-ключах.")
 
     # Вывод в формате: TG{n}_SESSION=<string>
     for idx, phone, s in results:
