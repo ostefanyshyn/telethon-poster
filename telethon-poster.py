@@ -635,6 +635,52 @@ async def send_post(record, row_idx, pending_indices=None):
     fail = [(i, ch, err) for (i, ch, s, err) in results if not s]
     print(f"Строка {row_idx}: перс-отправки завершены. Успешно {ok}/{len(clients_with_channels)}. Неудачи: {fail}")
 
+
+# --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
+async def validate_sessions_before_start():
+    """
+    Проверяет, что у каждого аккаунта есть StringSession и что он авторизован.
+    Если найдены проблемы, печатает, для каких TG{n} сессии отсутствуют/недействительны,
+    и завершает процесс, чтобы Telethon не запрашивал номер телефона.
+    """
+    missing = []       # TG{n} без TG{n}_SESSION в окружении
+    unauthorized = []  # TG{n} сессия есть, но не авторизована (Telethon потребовал бы вход)
+    failed = []        # TG{n} проверка не удалась по исключению (например, битая сессия)
+
+    for acc_idx, acc in ACC_BY_INDEX.items():
+        client = CLIENT_BY_INDEX[acc_idx]
+
+        # Нет TG{n}_SESSION — точно потребует телефон
+        if not acc.get("session"):
+            missing.append(acc_idx)
+            continue
+
+        # Пробуем подключиться и проверить авторизацию
+        try:
+            if not client.is_connected():
+                await client.connect()
+            authed = await client.is_user_authorized()
+            if not authed:
+                unauthorized.append(acc_idx)
+        except Exception as e:
+            failed.append((acc_idx, str(e)))
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    if missing or unauthorized or failed:
+        if missing:
+            print("ОШИБКА: Не заданы TG{n}_SESSION для: " + ", ".join(f"TG{n}" for n in sorted(missing)))
+        if unauthorized:
+            print("ОШИБКА: Недействительные/неавторизованные сессии для: " + ", ".join(f"TG{n}" for n in sorted(unauthorized)))
+        if failed:
+            for n, err in failed:
+                print(f"ОШИБКА: TG{n} проверка сессии завершилась ошибкой: {err}")
+        print("Завершение без интерактивного входа. Исправьте сессии и перезапустите.")
+        exit(1)
+
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
 async def main():
@@ -642,6 +688,9 @@ async def main():
     if not clients:
         print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте TG_API_ID/TG_API_HASH и TG{n}_SESSION/TG{n}_CHANNEL.")
         return
+
+    # Предварительная проверка сессий: не даём Telethon спрашивать телефон
+    await validate_sessions_before_start()
 
     print("Подключение Telegram клиентов...")
     results = await asyncio.gather(*(c.start() for c in clients), return_exceptions=True)
