@@ -113,8 +113,15 @@ if missing_proxy:
     )
     exit(1)
 
+
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
+
+# --- Validation tunables (speed up startup; override via env) ---
+VALIDATION_CONNECT_TIMEOUT = int(os.environ.get("VALIDATION_CONNECT_TIMEOUT", "15"))
+VALIDATION_AUTH_TIMEOUT = int(os.environ.get("VALIDATION_AUTH_TIMEOUT", "10"))
+VALIDATION_DISCONNECT_TIMEOUT = int(os.environ.get("VALIDATION_DISCONNECT_TIMEOUT", "5"))
+VALIDATION_CONCURRENCY = int(os.environ.get("VALIDATION_CONCURRENCY", "5"))
 
 # --- 2. НАСТРОЙКА КЛИЕНТОВ ---
 
@@ -639,36 +646,58 @@ async def send_post(record, row_idx, pending_indices=None):
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
 async def validate_sessions_before_start():
     """
-    Проверяет, что у каждого аккаунта есть StringSession и что он авторизован.
-    Если найдены проблемы, печатает, для каких TG{n} сессии отсутствуют/недействительны,
-    и завершает процесс, чтобы Telethon не запрашивал номер телефона.
+    Параллельно проверяет, что у каждого аккаунта есть StringSession и что он авторизован.
+    Делает короткие таймауты на соединение/проверку, чтобы не "висеть" на недоступных прокси.
+    Если найдены проблемы, печатает подробности и завершает процесс без интерактива.
+    Настройки таймаутов и конкуренции регулируются переменными окружения:
+      - VALIDATION_CONNECT_TIMEOUT (сек)
+      - VALIDATION_AUTH_TIMEOUT (сек)
+      - VALIDATION_DISCONNECT_TIMEOUT (сек)
+      - VALIDATION_CONCURRENCY (кол-во одновременных проверок)
     """
+    print(f"Проверка сессий Telegram... (всего аккаунтов: {len(ACC_BY_INDEX)})")
+
     missing = []       # TG{n} без TG{n}_SESSION в окружении
     unauthorized = []  # TG{n} сессия есть, но не авторизована (Telethon потребовал бы вход)
-    failed = []        # TG{n} проверка не удалась по исключению (например, битая сессия)
+    failed = []        # TG{n} проверка не удалась по исключению/таймауту
 
-    for acc_idx, acc in ACC_BY_INDEX.items():
+    sem = asyncio.Semaphore(max(1, int(VALIDATION_CONCURRENCY)))
+
+    async def _check_one(acc_idx: int, acc: dict):
         client = CLIENT_BY_INDEX[acc_idx]
 
-        # Нет TG{n}_SESSION — точно потребует телефон
         if not acc.get("session"):
             missing.append(acc_idx)
-            continue
+            print(f"TG{acc_idx}: нет TG{acc_idx}_SESSION — пропуск")
+            return
 
-        # Пробуем подключиться и проверить авторизацию
         try:
+            print(f"TG{acc_idx}: подключение через прокси...")
             if not client.is_connected():
-                await client.connect()
-            authed = await client.is_user_authorized()
+                await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
+            authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
             if not authed:
                 unauthorized.append(acc_idx)
+                print(f"TG{acc_idx}: сессия НЕ авторизована")
+            else:
+                print(f"TG{acc_idx}: OK")
+        except asyncio.TimeoutError:
+            failed.append((acc_idx, f"timeout ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)"))
+            print(f"TG{acc_idx}: timeout при проверке")
         except Exception as e:
             failed.append((acc_idx, str(e)))
+            print(f"TG{acc_idx}: ошибка проверки: {e}")
         finally:
             try:
-                await client.disconnect()
+                await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
             except Exception:
                 pass
+
+    async def _worker(acc_idx: int, acc: dict):
+        async with sem:
+            await _check_one(acc_idx, acc)
+
+    await asyncio.gather(*(_worker(i, acc) for i, acc in ACC_BY_INDEX.items()))
 
     if missing or unauthorized or failed:
         if missing:
@@ -678,7 +707,7 @@ async def validate_sessions_before_start():
         if failed:
             for n, err in failed:
                 print(f"ОШИБКА: TG{n} проверка сессии завершилась ошибкой: {err}")
-        print("Завершение без интерактивного входа. Исправьте сессии и перезапустите.")
+        print("Завершение без интерактивного входа. Исправьте сессии/прокси и перезапустите.")
         exit(1)
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
