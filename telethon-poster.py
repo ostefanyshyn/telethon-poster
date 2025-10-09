@@ -290,12 +290,8 @@ def _load_crown_font():
                 return ImageFont.truetype(p, CROWN_FONT_SIZE)
         except Exception:
             pass
-    # Final fallback – Pillow's default bitmap font (limited glyph coverage)
-    try:
-        _CROWN_FONT_SOURCE = "Pillow:load_default"
-        return ImageFont.load_default()
-    except Exception:
-        return None
+    # No acceptable TTF font found; do not fall back to Pillow's bitmap font
+    return None
 
 _CROWN_FONT = _load_crown_font()
 
@@ -307,7 +303,7 @@ if _PIL_AVAILABLE and _CROWN_FONT:
         _CROWN_MEASURE_MODE = "Pillow.getbbox"
     print(f"[CROWN] Pixel measurement ENABLED via Pillow ({_CROWN_MEASURE_MODE}); font={_CROWN_FONT_SOURCE}; size={CROWN_FONT_SIZE}")
 else:
-    print("ОШИБКА: пиксельное измерение для выравнивания короны недоступно (Pillow/шрифт не загружены). Установите Pillow и валидный TTF-шрифт (напр., DejaVuSans.ttf) или задайте CROWN_FONT_PATH. Без этого запуск запрещён.")
+    print("ОШИБКА: пиксельное измерение для выравнивания короны недоступно (Pillow/шрифт не загружены). Требуется валидный TTF-шрифт (напр., DejaVuSans.ttf); загрузка ImageFont.load_default() не допускается. Установите шрифт или задайте CROWN_FONT_PATH. Без этого запуск запрещён.")
     sys.exit(1)
 
 print(f"[CROWN] Preset={CROWN_PRESET or 'default'}, fine_tune={CROWN_FINE_TUNE}")
