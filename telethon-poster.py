@@ -307,7 +307,8 @@ if _PIL_AVAILABLE and _CROWN_FONT:
         _CROWN_MEASURE_MODE = "Pillow.getbbox"
     print(f"[CROWN] Pixel measurement ENABLED via Pillow ({_CROWN_MEASURE_MODE}); font={_CROWN_FONT_SOURCE}; size={CROWN_FONT_SIZE}")
 else:
-    print("[CROWN] Pixel measurement DISABLED; using heuristic width (~7 px/char).")
+    print("ОШИБКА: пиксельное измерение для выравнивания короны недоступно (Pillow/шрифт не загружены). Установите Pillow и валидный TTF-шрифт (напр., DejaVuSans.ttf) или задайте CROWN_FONT_PATH. Без этого запуск запрещён.")
+    sys.exit(1)
 
 print(f"[CROWN] Preset={CROWN_PRESET or 'default'}, fine_tune={CROWN_FINE_TUNE}")
 
