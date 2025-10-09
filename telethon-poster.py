@@ -275,21 +275,62 @@ def _load_crown_font():
     global _CROWN_FONT_SOURCE
     if not _PIL_AVAILABLE:
         return None
+
+    # Base dir of this file for relative lookups like ./fonts/*.ttf
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        script_dir = os.getcwd()
+
     # Try env-provided font first
     paths_to_try = [p for p in [CROWN_FONT_PATH] if p]
+
     # Common Linux locations (present on many containers)
     paths_to_try += [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         "/usr/local/share/fonts/DejaVuSans.ttf",
+        # Typical relative locations in repo/container
+        os.path.join(script_dir, "fonts", "DejaVuSans.ttf"),
+        os.path.join(script_dir, "fonts", "dejavu", "DejaVuSans.ttf"),
+        "./fonts/DejaVuSans.ttf",
+        "fonts/DejaVuSans.ttf",
     ]
+
+    # Also scan ./fonts for any .ttf (accept the first that loads)
+    for d in [os.path.join(script_dir, "fonts"), "./fonts", "fonts"]:
+        try:
+            if os.path.isdir(d):
+                for fname in os.listdir(d):
+                    if fname.lower().endswith(".ttf"):
+                        p = os.path.join(d, fname)
+                        if p not in paths_to_try:
+                            paths_to_try.append(p)
+        except Exception:
+            pass
+
     for p in paths_to_try:
         try:
             if p and os.path.exists(p):
-                _CROWN_FONT_SOURCE = f"env:{p}" if p == CROWN_FONT_PATH and p else f"system:{p}"
+                if CROWN_FONT_PATH and os.path.abspath(p) == os.path.abspath(CROWN_FONT_PATH):
+                    _CROWN_FONT_SOURCE = f"env:{p}"
+                elif os.path.abspath(p).startswith(os.path.abspath(script_dir)) or p.startswith("./") or p.startswith("fonts"):
+                    _CROWN_FONT_SOURCE = f"local:{p}"
+                else:
+                    _CROWN_FONT_SOURCE = f"system:{p}"
                 return ImageFont.truetype(p, CROWN_FONT_SIZE)
         except Exception:
+            # Try next candidate
             pass
+
+    # Optional: one-time debug to help users
+    try:
+        print("[CROWN] Не удалось найти валидный TTF. Проверенные пути:")
+        for p in paths_to_try:
+            print("   -", p)
+    except Exception:
+        pass
+
     # No acceptable TTF font found; do not fall back to Pillow's bitmap font
     return None
 
