@@ -453,6 +453,8 @@ async def send_post(record, row_idx, pending_indices=None):
     outcall_price = record.get("Outcall", "")
     whatsapp_link = record.get("WhatsApp", "")
     telegram_link = record.get("Telegram", "")
+    nationality_raw = record.get("Национальность", "")
+    nationality_flag = re.sub(r"\s+", "", str(nationality_raw or ""))
 
     # --- сбор строк внутри блоков ---
     param_lines = []
@@ -466,19 +468,21 @@ async def send_post(record, row_idx, pending_indices=None):
 
     # 1) Статус
     blocks.append(
-        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>{THIN}'
-        f'<i>{status}</i>{THIN}'
+        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>{NNBSP}'
+        f'<i>{status}</i>{NNBSP}'
         f'<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
     )
 
     # 2) Коронка над именем (2 строки)
     crown_html = f'<a href="emoji/{emoji_ids[3]}">{emoji_placeholders[3]}</a>'
     line1, line2 = crown_over_name_lines(name, crown_html)
+    if nationality_flag:
+        line2 = f"{line2}{NNBSP}{nationality_flag}"
     blocks.append("\n".join([line1, line2]))
 
     # 3) Фото
     foto_checks = "".join(f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>' for i in range(4, 8))
-    blocks.append(f'<b>Фото{THIN}{foto_checks}</b>')
+    blocks.append(f'<b>Фото{NNBSP}{foto_checks}</b>')
 
     # 4) Услуги/Доп.услуги (если есть)
     services_lines = []
@@ -495,8 +499,8 @@ async def send_post(record, row_idx, pending_indices=None):
     # 5) Параметры (если есть)
     if param_lines:
         params_header = (
-            f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>{THIN}'
-            f'Параметры{THIN}'
+            f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>{NNBSP}'
+            f'Параметры{NNBSP}'
             f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>'
         )
         blocks.append(params_header + "\n" + '<b><i>' + "\n".join(param_lines) + '</i></b>')
@@ -516,8 +520,8 @@ async def send_post(record, row_idx, pending_indices=None):
     if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
     if price_lines:
         price_header = (
-            f'<a href="emoji/{emoji_ids[10]}">{emoji_placeholders[10]}</a>{THIN}'
-            f'Цена{THIN}'
+            f'<a href="emoji/{emoji_ids[10]}">{emoji_placeholders[10]}</a>{NNBSP}'
+            f'Цена{NNBSP}'
             f'<a href="emoji/{emoji_ids[11]}">{emoji_placeholders[11]}</a>'
         )
         blocks.append(price_header + "\n" + '<b><i>' + "\n".join(price_lines) + '</i></b>')
@@ -525,7 +529,7 @@ async def send_post(record, row_idx, pending_indices=None):
     # 7) Призыв + контакты (БЕЗ пустой строки между ними)
     cta_and_contacts = [
         f'<a href="emoji/{emoji_ids[12]}">{emoji_placeholders[12]}</a>'
-        f'{THIN}<b><i>Назначь встречу уже сегодня!</i></b>{THIN}'
+        f'{NNBSP}<b><i>Назначь встречу уже сегодня!</i></b>{NNBSP}'
         f'<a href="emoji/{emoji_ids[13]}">{emoji_placeholders[13]}</a>'
     ]
     if telegram_link and str(telegram_link).strip():
@@ -550,9 +554,20 @@ async def send_post(record, row_idx, pending_indices=None):
         url = record.get(header)
         if url and isinstance(url, str) and url.startswith("http"):
             media_urls.append(url)
+
+    if not media_urls:
+        print(f"ПРЕДУПРЕЖДЕНИЕ: Нет ни одной ссылки на медиа в строке {row_idx}. Публикация пропущена.")
+        return
+
+    # Если есть дубликаты ссылок — пропускаем публикацию
+    if media_urls and len(set(media_urls)) != len(media_urls):
+        print(f"ПРЕДУПРЕЖДЕНИЕ: Обнаружены дубликаты ссылок на медиа в строке {row_idx}. Публикация пропущена.")
+        return
+
     print(f"Найдено {len(media_urls)} URL-адресов для строки {row_idx}.")
 
     media_data = []
+    download_failed = False
     if media_urls:
         for url in media_urls:
             try:
@@ -569,11 +584,19 @@ async def send_post(record, row_idx, pending_indices=None):
                     elif 'image' in content_type:
                         file_name = "image.jpg"
                     else:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: Неподдерживаемый тип {content_type} для {url}. Пропуск.")
-                        continue
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: Неподдерживаемый тип {content_type} для {url}. Публикация пропущена.")
+                        download_failed = True
+                        break
                 media_data.append((file_data, file_name))
             except Exception as e:
-                print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить медиа {url} - {e}")
+                print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось загрузить медиа {url} - {e}. Публикация пропущена.")
+                download_failed = True
+                break
+
+    # Если хотя бы одно медиа не загрузилось — пропускаем публикацию
+    if media_urls and (download_failed or len(media_data) != len(media_urls)):
+        print(f"ПРЕДУПРЕЖДЕНИЕ: Загрузка медиа неполная для строки {row_idx}. Публикация пропущена.")
+        return
 
     # --- отправка ---
     if pending_indices is None:
