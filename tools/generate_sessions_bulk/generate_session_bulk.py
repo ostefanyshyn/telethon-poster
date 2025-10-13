@@ -25,6 +25,7 @@ import asyncio
 import os
 import re
 import sys
+import subprocess
 from dataclasses import dataclass
 from getpass import getpass
 from pathlib import Path
@@ -43,6 +44,55 @@ except Exception as e:
 # ----------------------------- утилиты парсинга -----------------------------
 ENV_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
 PREFIX_RE = re.compile(r"^TG(\d+)_", re.IGNORECASE)
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """
+    Copy `text` to the system clipboard.
+    Tries pyperclip if available, then falls back to platform-specific utilities:
+    - macOS: pbcopy
+    - Windows: clip
+    - Linux/Wayland/X11: wl-copy, xclip, xsel
+    Returns True on success, False otherwise.
+    """
+    # Try pyperclip first if installed
+    try:
+        import pyperclip  # type: ignore
+        pyperclip.copy(text)
+        return True
+    except Exception:
+        pass
+
+    # macOS
+    try:
+        proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+        proc.communicate(input=text.encode("utf-8"))
+        if proc.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    # Windows
+    try:
+        # clip expects UTF-16LE
+        proc = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
+        proc.communicate(input=text.encode("utf-16le"))
+        if proc.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    # Linux / BSD / Wayland
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            proc.communicate(input=text.encode("utf-8"))
+            if proc.returncode == 0:
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 def parse_env_file(path: Path) -> Dict[str, str]:
@@ -352,14 +402,19 @@ def main() -> int:
             sess = await ensure_session(acc, twofa_passwords=get_passwords_for(env, acc.idx), force=True)
             if sess:
                 results[acc.idx] = sess
+                line = f"TG{acc.idx}_SESSION={sess}"
+                # Print exactly in the requested KEY=VALUE format
+                print(line)
+                # Try to copy to the system clipboard
+                if copy_to_clipboard(line):
+                    print(f"[✓] TG{acc.idx}: строка сессии скопирована в буфер обмена")
+                else:
+                    print(f"[!] TG{acc.idx}: не удалось скопировать в буфер обмена — установите pyperclip или используйте pbcopy/xclip/clip")
         if not results:
             print("[!] Не удалось получить ни одной сессии")
             return 1
 
-        # Сформируем вывод с сессиями в терминал
-        lines = [f"TG{idx}_SESSION={sess}" for idx, sess in sorted(results.items())]
-        payload = "\n".join(lines) + "\n"
-        print(payload, end="")
+        # Уже напечатали строки и попытались скопировать их по мере генерации
         return 0
 
     return asyncio.run(runner())

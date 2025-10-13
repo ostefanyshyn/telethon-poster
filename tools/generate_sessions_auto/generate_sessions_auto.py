@@ -209,10 +209,22 @@ async def main():
     sem = asyncio.Semaphore(5)
 
     async def guarded(idx: int, cfg: Dict[str, str]):
+        """
+        Оборачиваем запуск аккаунта таймаутом в 60 секунд.
+        Если не успели — пропускаем аккаунт.
+        """
         acc_api_id = int(cfg.get("API_ID", api_id) or 0)
         acc_api_hash = cfg.get("API_HASH", api_hash)
         async with sem:
-            return await start_account(idx, acc_api_id, acc_api_hash, cfg)
+            try:
+                return await asyncio.wait_for(
+                    start_account(idx, acc_api_id, acc_api_hash, cfg),
+                    timeout=60
+                )
+            except asyncio.TimeoutError:
+                phone = cfg.get("PHONE", f"TG{idx}")
+                print(f"[TG{idx} | {phone}] ⏳ Превышен лимит 60с на создание/подъём сессии. Пропуск аккаунта.")
+                return idx, phone, None
 
     results = await asyncio.gather(*(guarded(idx, cfg) for idx, cfg in accounts.items()))
 
