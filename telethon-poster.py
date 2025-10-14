@@ -114,14 +114,8 @@ if missing_proxy:
     exit(1)
 
 
-
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
-
-# Параметры параллельной отправки (чтобы не "забивать" прокси при видео)
-SEND_MAX_CONCURRENCY_DEFAULT = int(os.environ.get("SEND_MAX_CONCURRENCY_DEFAULT", "6"))  # для постов без видео
-SEND_MAX_CONCURRENCY_VIDEO = int(os.environ.get("SEND_MAX_CONCURRENCY_VIDEO", "3"))      # для постов с видео
-SEND_BATCH_PAUSE_SECONDS = float(os.environ.get("SEND_BATCH_PAUSE_SECONDS", "2.0"))      # пауза между батчами (сек)
 
 # --- Validation tunables (speed up startup; override via env) ---
 VALIDATION_CONNECT_TIMEOUT = int(os.environ.get("VALIDATION_CONNECT_TIMEOUT", "15"))
@@ -250,8 +244,14 @@ emoji_placeholders = {
 }
 
 # Пробелы/переводы строк для стабильной типографики
+CROWN_OFFSET_ADJUST = int(os.environ.get("CROWN_OFFSET_ADJUST", "0"))
+CROWN_OFFSET_SCALE = float(os.environ.get("CROWN_OFFSET_SCALE", "1.25"))
+
+# Пробелы/переводы строк для стабильной типографики
+CROWN_THIN = "\u2009"  # тонкий пробел БЕЗ word-joiner — только для отступа короны
 NNBSP = "\u202F"   # узкий неразрывный пробел (для отступа короны)
-THIN  = "\u2009"   # тонкий пробел (зазоры вокруг эмодзи)
+WORD_JOINER = "\u2060"  # WORD JOINER (запрещает перенос)
+THIN  = "\u2009" + WORD_JOINER  # тонкий + запрет переноса (комбо)
 CROWN_OFFSET_ADJUST = int(os.environ.get("CROWN_OFFSET_ADJUST", "0"))
 CROWN_OFFSET_SCALE = float(os.environ.get("CROWN_OFFSET_SCALE", "1.25"))
 
@@ -428,7 +428,7 @@ def crown_over_name_lines(name: str, crown_html: str):
     # Fine-tune with THIN spaces (smaller width) to better match iOS rendering
     thin_count = 0
     if CROWN_FINE_TUNE == "thin":
-        thin_px = _space_width_px(THIN)
+        thin_px = _space_width_px(CROWN_THIN)
         if thin_px > 0:
             thin_count = int(round(leftover_px / thin_px))
             thin_count = max(0, min(thin_count, 8))  # cap to avoid overshoot
@@ -436,7 +436,7 @@ def crown_over_name_lines(name: str, crown_html: str):
     # Backward-compatible manual adjust in units of NNBSP
     n_spaces += max(0, CROWN_OFFSET_ADJUST)
 
-    indent = (NNBSP * n_spaces) + (THIN * thin_count)
+    indent = (NNBSP * n_spaces) + (CROWN_THIN * thin_count)
     line1 = f"{indent}{crown_html}"
     line2 = f"<b><i>{name}</i></b>"
     return line1, line2
@@ -474,8 +474,8 @@ async def send_post(record, row_idx, pending_indices=None):
 
     # 1) Статус
     blocks.append(
-        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>{NNBSP}'
-        f'<i>{status}</i>{NNBSP}'
+        f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>{THIN}'
+        f'<i>{status}</i>{THIN}'
         f'<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
     )
 
@@ -483,12 +483,12 @@ async def send_post(record, row_idx, pending_indices=None):
     crown_html = f'<a href="emoji/{emoji_ids[3]}">{emoji_placeholders[3]}</a>'
     line1, line2 = crown_over_name_lines(name, crown_html)
     if nationality_flag:
-        line2 = f"{line2}{NNBSP}{nationality_flag}"
+        line2 = f"{line2}{THIN}{nationality_flag}"
     blocks.append("\n".join([line1, line2]))
 
     # 3) Фото
     foto_checks = "".join(f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>' for i in range(4, 8))
-    blocks.append(f'<b>Фото{NNBSP}{foto_checks}</b>')
+    blocks.append(f'<b>Фото{THIN}{foto_checks}</b>')
 
     # 4) Услуги/Доп.услуги (если есть)
     services_lines = []
@@ -505,8 +505,8 @@ async def send_post(record, row_idx, pending_indices=None):
     # 5) Параметры (если есть)
     if param_lines:
         params_header = (
-            f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>{NNBSP}'
-            f'Параметры{NNBSP}'
+            f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>{THIN}'
+            f'Параметры{THIN}'
             f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>'
         )
         blocks.append(params_header + "\n" + '<b><i>' + "\n".join(param_lines) + '</i></b>')
@@ -526,8 +526,8 @@ async def send_post(record, row_idx, pending_indices=None):
     if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
     if price_lines:
         price_header = (
-            f'<a href="emoji/{emoji_ids[10]}">{emoji_placeholders[10]}</a>{NNBSP}'
-            f'Цена{NNBSP}'
+            f'<a href="emoji/{emoji_ids[10]}">{emoji_placeholders[10]}</a>{THIN}'
+            f'Цена{THIN}'
             f'<a href="emoji/{emoji_ids[11]}">{emoji_placeholders[11]}</a>'
         )
         blocks.append(price_header + "\n" + '<b><i>' + "\n".join(price_lines) + '</i></b>')
@@ -535,17 +535,17 @@ async def send_post(record, row_idx, pending_indices=None):
     # 7) Призыв + контакты (БЕЗ пустой строки между ними)
     cta_and_contacts = [
         f'<a href="emoji/{emoji_ids[12]}">{emoji_placeholders[12]}</a>'
-        f'{NNBSP}<b><i>Назначь встречу уже сегодня!</i></b>{NNBSP}'
+        f'{THIN}<b><i>Назначь встречу уже сегодня!</i></b>{THIN}'
         f'<a href="emoji/{emoji_ids[13]}">{emoji_placeholders[13]}</a>'
     ]
     if telegram_link and str(telegram_link).strip():
         cta_and_contacts.append(
-            f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a> '
+            f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a>{THIN}'
             f'<a href="{telegram_link}"><b>Связь в Telegram</b></a>'
         )
     if whatsapp_link and str(whatsapp_link).strip():
         cta_and_contacts.append(
-            f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a> '
+            f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a>{THIN}'
             f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a>'
         )
     blocks.append("\n".join(cta_and_contacts))
@@ -603,12 +603,6 @@ async def send_post(record, row_idx, pending_indices=None):
     if media_urls and (download_failed or len(media_data) != len(media_urls)):
         print(f"ПРЕДУПРЕЖДЕНИЕ: Загрузка медиа неполная для строки {row_idx}. Публикация пропущена.")
         return
-
-    # Определяем, есть ли в подборке видео (для снижения конкуренции)
-    is_video_heavy = any(
-        fname.lower().endswith((".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"))
-        for (_, fname) in media_data
-    )
 
     # --- отправка ---
     if pending_indices is None:
@@ -706,21 +700,10 @@ async def send_post(record, row_idx, pending_indices=None):
                 print(f"ОШИБКА: TG{acc_idx} повторная отправка не удалась: {e2}")
                 return acc_idx, channel_str, False, f"retry: {e2}"
 
-    # Ограничиваем число одновременных отправок, чтобы не класть прокси каналы
-    max_conc = SEND_MAX_CONCURRENCY_VIDEO if is_video_heavy else SEND_MAX_CONCURRENCY_DEFAULT
-    max_conc = max(1, int(max_conc))
-
-    results = []
-    for i in range(0, len(clients_with_channels), max_conc):
-        batch = clients_with_channels[i:i + max_conc]
-        batch_results = await asyncio.gather(
-            *[_send_to_one(client, acc) for (client, acc) in batch],
-            return_exceptions=False
-        )
-        results.extend(batch_results)
-        # Если есть ещё батчи — делаем короткую паузу, чтобы разгрузить прокси/канал
-        if i + max_conc < len(clients_with_channels) and SEND_BATCH_PAUSE_SECONDS > 0:
-            await asyncio.sleep(SEND_BATCH_PAUSE_SECONDS)
+    results = await asyncio.gather(
+        *[_send_to_one(client, acc) for (client, acc) in clients_with_channels],
+        return_exceptions=False
+    )
 
     ok = sum(1 for (_, _, s, _) in results if s)
     fail = [(i, ch, err) for (i, ch, s, err) in results if not s]
@@ -863,7 +846,7 @@ async def main():
             await asyncio.sleep(REFRESH_SECONDS)
 
         except gspread.exceptions.APIError as e:
-            print(f"ОШИБКА API Google Sheets: {e}. Повторная попытка через {REFRESH_SECONDS} сек.")
+            print(f"ОШИБКА API Google Sheets: {e}. Повторнxая попытка через {REFRESH_SECONDS} сек.")
             await asyncio.sleep(REFRESH_SECONDS)
         except Exception as e:
             print(f"КРИТИЧЕСКАЯ ОШИБКА в главном цикле: {e}")
