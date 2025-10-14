@@ -1,3 +1,5 @@
 .env
 .env.gen
-.env.genauto
+.env.genauto.env
+.env.*
+*.env

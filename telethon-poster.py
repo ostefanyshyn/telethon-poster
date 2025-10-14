@@ -114,8 +114,14 @@ if missing_proxy:
     exit(1)
 
 
+
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
+
+# Параметры параллельной отправки (чтобы не "забивать" прокси при видео)
+SEND_MAX_CONCURRENCY_DEFAULT = int(os.environ.get("SEND_MAX_CONCURRENCY_DEFAULT", "6"))  # для постов без видео
+SEND_MAX_CONCURRENCY_VIDEO = int(os.environ.get("SEND_MAX_CONCURRENCY_VIDEO", "3"))      # для постов с видео
+SEND_BATCH_PAUSE_SECONDS = float(os.environ.get("SEND_BATCH_PAUSE_SECONDS", "2.0"))      # пауза между батчами (сек)
 
 # --- Validation tunables (speed up startup; override via env) ---
 VALIDATION_CONNECT_TIMEOUT = int(os.environ.get("VALIDATION_CONNECT_TIMEOUT", "15"))
@@ -598,6 +604,12 @@ async def send_post(record, row_idx, pending_indices=None):
         print(f"ПРЕДУПРЕЖДЕНИЕ: Загрузка медиа неполная для строки {row_idx}. Публикация пропущена.")
         return
 
+    # Определяем, есть ли в подборке видео (для снижения конкуренции)
+    is_video_heavy = any(
+        fname.lower().endswith((".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"))
+        for (_, fname) in media_data
+    )
+
     # --- отправка ---
     if pending_indices is None:
         target_indexes = [
@@ -694,10 +706,21 @@ async def send_post(record, row_idx, pending_indices=None):
                 print(f"ОШИБКА: TG{acc_idx} повторная отправка не удалась: {e2}")
                 return acc_idx, channel_str, False, f"retry: {e2}"
 
-    results = await asyncio.gather(
-        *[_send_to_one(client, acc) for (client, acc) in clients_with_channels],
-        return_exceptions=False
-    )
+    # Ограничиваем число одновременных отправок, чтобы не класть прокси каналы
+    max_conc = SEND_MAX_CONCURRENCY_VIDEO if is_video_heavy else SEND_MAX_CONCURRENCY_DEFAULT
+    max_conc = max(1, int(max_conc))
+
+    results = []
+    for i in range(0, len(clients_with_channels), max_conc):
+        batch = clients_with_channels[i:i + max_conc]
+        batch_results = await asyncio.gather(
+            *[_send_to_one(client, acc) for (client, acc) in batch],
+            return_exceptions=False
+        )
+        results.extend(batch_results)
+        # Если есть ещё батчи — делаем короткую паузу, чтобы разгрузить прокси/канал
+        if i + max_conc < len(clients_with_channels) and SEND_BATCH_PAUSE_SECONDS > 0:
+            await asyncio.sleep(SEND_BATCH_PAUSE_SECONDS)
 
     ok = sum(1 for (_, _, s, _) in results if s)
     fail = [(i, ch, err) for (i, ch, s, err) in results if not s]
