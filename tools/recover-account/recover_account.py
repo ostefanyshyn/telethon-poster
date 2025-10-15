@@ -1,36 +1,37 @@
 #!/usr/bin/env python3
 """
-recover_account.py (перепрофилирован на прослушивание входящих)
+recover_account.py — выбор аккаунта по цифре и прослушивание входящих
 
-Что делает:
-- Берёт одну или несколько StringSession из env.recover/.env.recover
-  Поддерживаемые переменные:
-    - TG_SESSION (одна)
-    - TG_SESSIONS (несколько, через запятую и/или перенос строки)
-    - TG_SESSION_1, TG_SESSION_2, ... (нумерованные)
-    - TG_STRING_SESSION / TG_STRING_SESSIONS / TG_STRING_SESSION_1 (синонимы)
-- Подключается ТОЛЬКО через прокси из того же файла env.
-- Печатает в консоль все ВХОДЯЩИЕ сообщения по всем валидным сессиям.
+Функции:
+- Ищет env-файл (env.recover или .env.recover) в ряде локаций или по ENV_RECOVER_PATH
+- Собирает пары (номер N) -> (TG{N}_SESSION + TG{N}_PROXY_*)
+- Показывает интерактивное меню с найденными номерами N
+- По выбранному номеру N подключается ТОЛЬКО через соответствующий прокси TG{N}_PROXY_*
+- Слушает и печатает все входящие сообщения для выбранной сессии
 
 Зависимости: telethon, python-dotenv, PySocks
 pip install telethon python-dotenv PySocks
 
-В env.recover/.env.recover должны быть:
-  TG_API_ID=123456
-  TG_API_HASH=0123456789abcdef0123456789abcdef
-  TG_PROXY_TYPE=socks5
-  TG_PROXY_HOST=eu.proxy.piaproxy.com
-  TG_PROXY_PORT=6000
-  TG_PROXY_USER=...
-  TG_PROXY_PASS=...
-  TG_PROXY_RDNS=true
-  # и одна из форм сессий:
-  # TG_SESSION=1AA...  или TG_SESSIONS=1AA...,2BB...  или TG_SESSION_1=...
+Обязательные переменные в env.recover/.env.recover:
+  TG_API_ID=...
+  TG_API_HASH=...
+  # для каждого аккаунта N:
+  TG{N}_SESSION=...
+  TG{N}_PROXY_TYPE=socks5|socks4|http
+  TG{N}_PROXY_HOST=...
+  TG{N}_PROXY_PORT=...
+  TG{N}_PROXY_USER=...
+  TG{N}_PROXY_PASS=...
+  TG{N}_PROXY_RDNS=true|false
+
+(Поддерживаются также TG_SESSION/TG_SESSIONS/TG_SESSION_1 и TG_STRING_*; 
+для них можно выбрать номер вручную через параметр --n.)
 """
 
 import os
 import re
 import sys
+import argparse
 import asyncio
 from datetime import datetime
 
@@ -44,24 +45,37 @@ except Exception:
     print("Требуется пакет PySocks: pip install PySocks", file=sys.stderr)
     raise
 
-#
-# Поиск файла env: поддерживаем явный путь через ENV_RECOVER_PATH,
-# текущую папку, папку со скриптом и её родителей до 3 уровней.
+# ============= Вспомогательные утилиты =============
+
+def now_iso() -> str:
+    return datetime.now().replace(microsecond=0).isoformat()
+
+
+def strtobool(s: str | None, default: bool = True) -> bool:
+    if s is None:
+        return default
+    return s.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def mask_middle(s: str, keep: int = 6) -> str:
+    if not s:
+        return ""
+    if len(s) <= keep * 2:
+        return s
+    return f"{s[:keep]}…{s[-keep:]}"
+
+
+# ============= Загрузка env =============
 ENV_PATH: str | None = None
 
 
 def _candidate_env_paths() -> list[str]:
     paths: list[str] = []
-    # 0) явный путь из переменной окружения
     explicit = os.getenv("ENV_RECOVER_PATH")
     if explicit:
         paths.append(os.path.abspath(explicit))
-
-    # 1) текущая рабочая директория
     for name in ("env.recover", ".env.recover"):
         paths.append(os.path.abspath(name))
-
-    # 2) директория скрипта и до 3 родителей
     base = os.path.abspath(os.path.dirname(__file__))
     cur = base
     for _ in range(4):  # base + 3 родителя
@@ -71,8 +85,7 @@ def _candidate_env_paths() -> list[str]:
         if parent == cur:
             break
         cur = parent
-
-    # Удаляем дубли, нормализуем
+    # Уникализируем
     seen = set()
     uniq: list[str] = []
     for p in paths:
@@ -84,15 +97,13 @@ def _candidate_env_paths() -> list[str]:
 
 
 def load_env_or_fail() -> None:
-    """Ищет env в нескольких местах и грузит первый найденный."""
     global ENV_PATH
     searched = _candidate_env_paths()
     for p in searched:
         if os.path.exists(p) and load_dotenv(p):
             ENV_PATH = p
             return
-    # fallback: вдруг файл есть, но os.path.exists() не сработал
-    for p in searched:
+    for p in searched:  # fallback
         if load_dotenv(p):
             ENV_PATH = p
             return
@@ -103,42 +114,9 @@ def load_env_or_fail() -> None:
     raise RuntimeError("\n".join(msg))
 
 
-def strtobool(s: str | None, default: bool = True) -> bool:
-    if s is None:
-        return default
-    return s.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+# ============= Чтение API и прокси/сессий =============
 
-
-def build_proxy_from_env():
-    """Кортеж прокси для Telethon/PySocks: (ptype, host, port, rdns[, user, pass])"""
-    ptype = os.getenv("TG_PROXY_TYPE")
-    host = os.getenv("TG_PROXY_HOST")
-    port = os.getenv("TG_PROXY_PORT")
-    user = os.getenv("TG_PROXY_USER")
-    pwd = os.getenv("TG_PROXY_PASS")
-    rdns = strtobool(os.getenv("TG_PROXY_RDNS"), default=True)
-
-    if not all([ptype, host, port]):
-        raise RuntimeError(
-            f"В {ENV_PATH or 'env.recover/.env.recover'} должны быть TG_PROXY_TYPE, TG_PROXY_HOST, TG_PROXY_PORT."
-        )
-
-    pmap = {"socks5": socks.SOCKS5, "socks4": socks.SOCKS4, "http": socks.HTTP}
-    if ptype.lower() not in pmap:
-        raise RuntimeError(f"Неподдерживаемый TG_PROXY_TYPE: {ptype}. Разрешены: socks5/socks4/http")
-
-    try:
-        port_i = int(port)
-    except ValueError:
-        raise RuntimeError("TG_PROXY_PORT должен быть числом.")
-
-    base = (pmap[ptype.lower()], host, port_i, rdns)
-    if user and pwd:
-        return base + (user, pwd)
-    return base
-
-
-def get_api_credentials():
+def get_api_credentials() -> tuple[int, str]:
     api_id = os.getenv("TG_API_ID")
     api_hash = os.getenv("TG_API_HASH")
     if not api_id or not api_hash:
@@ -146,81 +124,98 @@ def get_api_credentials():
             f"Добавьте TG_API_ID и TG_API_HASH в {ENV_PATH or 'env.recover/.env.recover'} — они требуются Telethon."
         )
     try:
-        api_id = int(api_id)
+        return int(api_id), api_hash
     except ValueError:
         raise RuntimeError("TG_API_ID должен быть целым числом.")
-    return api_id, api_hash
 
 
-def now_iso() -> str:
-    return datetime.now().replace(microsecond=0).isoformat()
+class ProxySpec:
+    def __init__(self, n: int, ptype: str, host: str, port: int, rdns: bool, user: str | None, pwd: str | None):
+        self.n = n
+        self.ptype = ptype
+        self.host = host
+        self.port = port
+        self.rdns = rdns
+        self.user = user
+        self.pwd = pwd
+
+    def to_pysocks(self):
+        import socks
+        pmap = {"socks5": socks.SOCKS5, "socks4": socks.SOCKS4, "http": socks.HTTP}
+        if self.ptype.lower() not in pmap:
+            raise RuntimeError(f"Неподдерживаемый TG{self.n}_PROXY_TYPE: {self.ptype}")
+        base = (pmap[self.ptype.lower()], self.host, self.port, self.rdns)
+        if self.user and self.pwd:
+            return base + (self.user, self.pwd)
+        return base
+
+    def short(self) -> str:
+        u = self.user or ""
+        return f"{self.ptype}://{self.host}:{self.port} ({mask_middle(u, 8)})"
 
 
-def read_string_sessions_from_env() -> list[str]:
-    """
-    Читает StringSession из env.
-    Поддерживает:
-      - TG_SESSION
-      - TG_SESSIONS (через запятую/переносы строк)
-      - TG_SESSION_<N>
-      - TG_STRING_SESSION / TG_STRING_SESSIONS / TG_STRING_SESSION_<N>
-    """
+def read_numbered_sessions() -> dict[int, str]:
+    out: dict[int, str] = {}
+    for k, v in os.environ.items():
+        m = re.fullmatch(r"TG(\d+)_SESSION", k)
+        if m and v and v.strip():
+            out[int(m.group(1))] = v.strip()
+    return dict(sorted(out.items(), key=lambda kv: kv[0]))
+
+
+def read_numbered_proxy(n: int) -> ProxySpec:
+    def need(key: str) -> str:
+        val = os.getenv(key)
+        if not val:
+            raise RuntimeError(
+                f"Отсутствует {key}. Для выбранного номера {n} обязательно задайте TG{n}_PROXY_TYPE/HOST/PORT [+ USER/PASS при необходимости]."
+            )
+        return val
+
+    ptype = need(f"TG{n}_PROXY_TYPE")
+    host = need(f"TG{n}_PROXY_HOST")
+    port_s = need(f"TG{n}_PROXY_PORT")
+    try:
+        port = int(port_s)
+    except ValueError:
+        raise RuntimeError(f"TG{n}_PROXY_PORT должен быть числом, а не '{port_s}'.")
+    user = os.getenv(f"TG{n}_PROXY_USER")
+    pwd = os.getenv(f"TG{n}_PROXY_PASS")
+    rdns = strtobool(os.getenv(f"TG{n}_PROXY_RDNS"), True)
+    return ProxySpec(n, ptype, host, port, rdns, user, pwd)
+
+
+# Дополнительная поддержка не-нумерованных сессий (опция --n для ручного выбора)
+
+def read_legacy_sessions() -> list[str]:
     sessions: list[str] = []
-
-    def _add_single(key: str):
-        v = os.getenv(key)
-        if v:
-            v = v.strip()
-            if v:
-                sessions.append(v)
-
-    # одиночные
-    for key in ("TG_SESSION", "TG_STRING_SESSION"):
-        _add_single(key)
-
-    # мульти-блоки
-    for key in ("TG_SESSIONS", "TG_STRING_SESSIONS"):
-        block = os.getenv(key)
-        if block:
-            parts = re.split(r"[,\n\r]+", block)
-            sessions.extend([p.strip() for p in parts if p and p.strip()])
-
-    # нумерованные
-    numbered = []
+    single = os.getenv("TG_SESSION") or os.getenv("TG_STRING_SESSION")
+    if single:
+        sessions.append(single.strip())
+    multi = os.getenv("TG_SESSIONS") or os.getenv("TG_STRING_SESSIONS")
+    if multi:
+        parts = re.split(r"[,\n\r]+", multi)
+        sessions.extend([p.strip() for p in parts if p and p.strip()])
+    # нумерованные альтернативной схемой
+    alt = []
     for k, v in os.environ.items():
         m = re.fullmatch(r"TG_(?:STRING_)?SESSION_(\d+)", k)
-        if m:
-            idx = int(m.group(1))
-            numbered.append((idx, (v or "").strip()))
-    for _, v in sorted(numbered, key=lambda t: t[0]):
-        if v:
-            sessions.append(v)
-
+        if m and v and v.strip():
+            alt.append((int(m.group(1)), v.strip()))
+    alt = [s for _, s in sorted(alt, key=lambda t: t[0])]
+    sessions.extend(alt)
     # уникализируем
-    seen = set()
-    uniq: list[str] = []
+    seen = set(); uniq = []
     for s in sessions:
         if s and s not in seen:
-            uniq.append(s)
-            seen.add(s)
-
-    if not uniq:
-        raise RuntimeError(
-            "Не найдено ни одной StringSession. Добавьте TG_SESSION/TG_SESSIONS/TG_SESSION_1 (или TG_STRING_*) в env."
-        )
+            uniq.append(s); seen.add(s)
     return uniq
 
 
-def fmt_chat_sender(event) -> tuple[str, str]:
-    """Возвращает (origin, text) для печати."""
-    origin = "Unknown"
-    text = event.raw_text.strip() if getattr(event, "raw_text", None) else ""
-    return origin, (text or "<сообщение без текста / медиа>")
-
+# ============= Логика приложения =============
 
 def make_handler(account_label: str):
     async def on_new_message(event):
-        # источник (чат/пользователь)
         origin = "Unknown"
         try:
             chat = await event.get_chat()
@@ -233,55 +228,108 @@ def make_handler(account_label: str):
             origin = chat_title or sender_name or origin
         except Exception:
             pass
-
         text = event.raw_text.strip() if getattr(event, "raw_text", None) else ""
         if not text:
             text = "<сообщение без текста / медиа>"
         print(f"[{now_iso()}] [acct:{account_label}] [{origin}] {text}", flush=True)
-
     return on_new_message
+
+
+async def listen_once(n: int, session: str, proxy: ProxySpec, api_id: int, api_hash: str):
+    client = TelegramClient(
+        StringSession(session),
+        api_id,
+        api_hash,
+        proxy=proxy.to_pysocks(),
+        device_model="Telethon Listener",
+        system_version="Python",
+        app_version="1.0",
+        lang_code="ru",
+        system_lang_code="ru-RU",
+    )
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Эта StringSession не авторизована (или утратила авторизацию).")
+    me = await client.get_me()
+    label = (me.username or me.first_name or str(me.id))
+    client.add_event_handler(make_handler(label), events.NewMessage(incoming=True))
+    print(f"✅ Выбран аккаунт [{n}]: {label} (id={me.id}) через {proxy.short()}")
+    print("▶ Слушаю входящие. Нажмите Ctrl+C для выхода.")
+    try:
+        await client.run_until_disconnected()
+    finally:
+        await client.disconnect()
+
+
+def choose_number_interactive(candidates: dict[int, str], default: int | None = None) -> int:
+    print("Доступные аккаунты (номер -> краткая информация):")
+    for n, sess in candidates.items():
+        print(f"  {n}: session {mask_middle(sess)}; proxy TG{n}_PROXY_*")
+    if default is not None and default in candidates:
+        prompt = f"Выберите номер [по умолчанию {default}]: "
+    else:
+        prompt = "Выберите номер: "
+
+    while True:
+        choice = input(prompt).strip()
+        if not choice and default is not None and default in candidates:
+            return default
+        if choice.isdigit():
+            val = int(choice)
+            if val in candidates:
+                return val
+        print("Некорректный выбор. Введите одну из цифр из списка.")
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Прослушивание входящих по StringSession через выбранный прокси")
+    p.add_argument("--n", type=int, help="Номер аккаунта TG{N}_* для использования (обходит меню)")
+    return p.parse_args()
 
 
 async def run():
     load_env_or_fail()
     print(f"[{now_iso()}] Загружаю переменные окружения из: {ENV_PATH}")
-    proxy = build_proxy_from_env()  # работаем только через прокси
     api_id, api_hash = get_api_credentials()
-    sessions = read_string_sessions_from_env()
 
-    clients: list[TelegramClient] = []
-    for s in sessions:
-        client = TelegramClient(
-            StringSession(s),
-            api_id,
-            api_hash,
-            proxy=proxy,
-            device_model="Telethon Listener",
-            system_version="Python",
-            app_version="1.0",
-            lang_code="ru",
-            system_lang_code="ru-RU",
-        )
-        await client.connect()
-        if not await client.is_user_authorized():
-            print("❌ Одна из StringSession не авторизована. Пропускаю её.", file=sys.stderr)
-            await client.disconnect()
-            continue
-        me = await client.get_me()
-        label = (me.username or me.first_name or str(me.id))
-        client.add_event_handler(make_handler(label), events.NewMessage(incoming=True))
-        clients.append(client)
-        print(f"✅ Аккаунт готов: {label} (id={me.id})", flush=True)
+    numbered_sessions = read_numbered_sessions()
+    args = parse_args()
 
-    if not clients:
-        print("Нет ни одного валидного аккаунта для прослушивания. Завершение.", file=sys.stderr)
-        sys.exit(1)
+    if not numbered_sessions:
+        # Нет TG{N}_SESSION, но возможно есть TG_SESSION/TG_SESSIONS
+        legacy = read_legacy_sessions()
+        if not legacy:
+            raise RuntimeError("Не найдено ни одной StringSession (ни TG{N}_SESSION, ни TG_SESSION/TG_SESSIONS)")
+        if args.n is None:
+            print("Найдены только не-нумерованные сессии. Используйте --n для фиксации номера прокси (например, 2), либо задайте TG{N}_SESSION.")
+            n = int(input("Введите номер N для прокси TG{N}_PROXY_*: ").strip())
+        else:
+            n = args.n
+        if not legacy:
+            raise RuntimeError("Нет сессий для подключения.")
+        # берём первую из legacy (или можно расширить до выбора)
+        session = legacy[0]
+        proxy = read_numbered_proxy(n)
+        await listen_once(n, session, proxy, api_id, api_hash)
+        return
 
-    print("▶ Слушаю входящие по всем активным аккаунтам. Нажмите Ctrl+C для выхода.")
-    try:
-        await asyncio.gather(*[c.run_until_disconnected() for c in clients])
-    finally:
-        await asyncio.gather(*[c.disconnect() for c in clients], return_exceptions=True)
+    # Есть нумерованные сессии TG{N}_SESSION
+    if args.n is not None:
+        if args.n not in numbered_sessions:
+            raise RuntimeError(f"Номер {args.n} не найден среди: {list(numbered_sessions.keys())}")
+        n = args.n
+    else:
+        # интерактивный выбор
+        # если только один — выбираем его
+        if len(numbered_sessions) == 1:
+            n = next(iter(numbered_sessions.keys()))
+            print(f"Найден единственный аккаунт TG{n}_SESSION — выбираю его автоматически.")
+        else:
+            n = choose_number_interactive(numbered_sessions)
+
+    session = numbered_sessions[n]
+    proxy = read_numbered_proxy(n)
+    await listen_once(n, session, proxy, api_id, api_hash)
 
 
 def main():
