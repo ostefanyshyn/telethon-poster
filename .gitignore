@@ -3,3 +3,4 @@
 .env.genauto.env
 .env.*
 *.env
+recover_sessions.txt
