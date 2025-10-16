@@ -117,11 +117,19 @@ if missing_proxy:
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
 
+
 # --- Validation tunables (speed up startup; override via env) ---
-VALIDATION_CONNECT_TIMEOUT = int(os.environ.get("VALIDATION_CONNECT_TIMEOUT", "15"))
-VALIDATION_AUTH_TIMEOUT = int(os.environ.get("VALIDATION_AUTH_TIMEOUT", "10"))
-VALIDATION_DISCONNECT_TIMEOUT = int(os.environ.get("VALIDATION_DISCONNECT_TIMEOUT", "5"))
+VALIDATION_CONNECT_TIMEOUT = int(os.environ.get("VALIDATION_CONNECT_TIMEOUT", "30"))
+VALIDATION_AUTH_TIMEOUT = int(os.environ.get("VALIDATION_AUTH_TIMEOUT", "20"))
+VALIDATION_DISCONNECT_TIMEOUT = int(os.environ.get("VALIDATION_DISCONNECT_TIMEOUT", "10"))
 VALIDATION_CONCURRENCY = int(os.environ.get("VALIDATION_CONCURRENCY", "5"))
+
+# --- Telethon network tunables (override via env) ---
+TELETHON_REQUEST_RETRIES = int(os.environ.get("TELETHON_REQUEST_RETRIES", "7"))
+TELETHON_CONNECTION_RETRIES = int(os.environ.get("TELETHON_CONNECTION_RETRIES", "6"))
+TELETHON_RETRY_DELAY = int(os.environ.get("TELETHON_RETRY_DELAY", "3"))
+TELETHON_TIMEOUT = int(os.environ.get("TELETHON_TIMEOUT", "45"))
+TELETHON_FLOOD_SLEEP_THRESHOLD = int(os.environ.get("TELETHON_FLOOD_SLEEP_THRESHOLD", "60"))
 
 # --- 2. НАСТРОЙКА КЛИЕНТОВ ---
 
@@ -175,11 +183,11 @@ for i, acc in enumerate(accounts):
             acc["api_hash"],
             proxy=prx,
             connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
-            request_retries=5,
-            connection_retries=3,
-            retry_delay=2,
-            timeout=30,
-            flood_sleep_threshold=60,
+            request_retries=TELETHON_REQUEST_RETRIES,
+            connection_retries=TELETHON_CONNECTION_RETRIES,
+            retry_delay=TELETHON_RETRY_DELAY,
+            timeout=TELETHON_TIMEOUT,
+            flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
         )
     )
 
