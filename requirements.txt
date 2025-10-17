@@ -5,4 +5,4 @@ python-dotenv==1.1.1
 requests==2.32.4
 pytz==2025.1
 PySocks>=1.7.1
-pillow
+Pillow>=10.3.0

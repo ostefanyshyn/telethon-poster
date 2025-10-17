@@ -66,28 +66,81 @@ except Exception:
     print("ОШИБКА: TG_API_ID должен быть числом.")
     exit(1)
 
+# Глобальный (общий) прокси (опционально): TG_PROXY_* или TG16_PROXY_* как фолбэк
+GLOBAL_PROXY = None
+# 1) Предпочтительно TG_PROXY_* (или PROXY_*)
+gp_type = os.environ.get("TG_PROXY_TYPE") or os.environ.get("PROXY_TYPE")
+gp_host = os.environ.get("TG_PROXY_HOST") or os.environ.get("PROXY_HOST")
+gp_port_str = os.environ.get("TG_PROXY_PORT") or os.environ.get("PROXY_PORT")
+gp_rdns_str = os.environ.get("TG_PROXY_RDNS", os.environ.get("PROXY_RDNS", "true"))
+gp_user = os.environ.get("TG_PROXY_USER") or os.environ.get("PROXY_USER")
+gp_pass = os.environ.get("TG_PROXY_PASS") or os.environ.get("PROXY_PASS")
+
+# 2) Если TG_PROXY_* не заданы, используем TG16_PROXY_* (по просьбе пользователя)
+if not (gp_type and gp_host and gp_port_str):
+    gp_type = os.environ.get("TG16_PROXY_TYPE", gp_type)
+    gp_host = os.environ.get("TG16_PROXY_HOST", gp_host)
+    gp_port_str = os.environ.get("TG16_PROXY_PORT", gp_port_str)
+    gp_rdns_str = os.environ.get("TG16_PROXY_RDNS", gp_rdns_str)
+    gp_user = os.environ.get("TG16_PROXY_USER", gp_user)
+    gp_pass = os.environ.get("TG16_PROXY_PASS", gp_pass)
+
+if gp_type and gp_host and gp_port_str:
+    try:
+        gp_port = int(gp_port_str)
+    except Exception:
+        gp_port = None
+    if gp_port:
+        gp_rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
+        GLOBAL_PROXY = (gp_type, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
+
 for n in range(1, 23):
     session = os.environ.get(f"TG{n}_SESSION")
     channel = os.environ.get(f"TG{n}_CHANNEL")
 
     # Параметры прокси для этого аккаунта (опционально)
     p_type = os.environ.get(f"TG{n}_PROXY_TYPE")      # например: 'socks5' или 'http'
-    host = os.environ.get(f"TG{n}_PROXY_HOST")
-    port_str = os.environ.get(f"TG{n}_PROXY_PORT")
-    rdns_str = os.environ.get(f"TG{n}_PROXY_RDNS", "true")
-    user = os.environ.get(f"TG{n}_PROXY_USER")
-    password = os.environ.get(f"TG{n}_PROXY_PASS")
+    p_host = os.environ.get(f"TG{n}_PROXY_HOST")
+    p_port_str = os.environ.get(f"TG{n}_PROXY_PORT")
+    p_rdns_raw = os.environ.get(f"TG{n}_PROXY_RDNS")  # None если не задано
+    p_user = os.environ.get(f"TG{n}_PROXY_USER")
+    p_pass = os.environ.get(f"TG{n}_PROXY_PASS")
 
-    # Сборка кортежа прокси, если задан
+    # Слияние с глобальным прокси: любые недостающие поля берём из GLOBAL_PROXY
+    gp_type = GLOBAL_PROXY[0] if GLOBAL_PROXY else None
+    gp_host = GLOBAL_PROXY[1] if GLOBAL_PROXY else None
+    gp_port = GLOBAL_PROXY[2] if GLOBAL_PROXY else None
+    gp_rdns = GLOBAL_PROXY[3] if GLOBAL_PROXY else True
+    gp_user = GLOBAL_PROXY[4] if GLOBAL_PROXY else None
+    gp_pass = GLOBAL_PROXY[5] if GLOBAL_PROXY else None
+
+    eff_type = p_type or gp_type
+    eff_host = p_host or gp_host
+    eff_port_str = p_port_str or (str(gp_port) if gp_port else None)
+
+    # RDNS: используем значение из TG{n}_PROXY_RDNS, если задано; иначе из GLOBAL_PROXY; иначе true
+    if p_rdns_raw is not None:
+        eff_rdns = str(p_rdns_raw).lower() in ("1", "true", "yes", "y", "on")
+    else:
+        eff_rdns = bool(gp_rdns)
+
+    # USER/PASS: пер-аккаунтные имеют приоритет; если не заданы — берём из GLOBAL_PROXY
+    eff_user = p_user if p_user is not None else gp_user
+    eff_pass = p_pass if p_pass is not None else gp_pass
+
+    # Сборка кортежа прокси, если после слияния есть тип/хост/порт
     proxy = None
-    if p_type and host and port_str:
+    if eff_type and eff_host and eff_port_str:
         try:
-            port = int(port_str)
+            eff_port = int(eff_port_str)
         except Exception:
-            port = None
-        if port:
-            rdns = str(rdns_str).lower() in ("1", "true", "yes", "y", "on")
-            proxy = (p_type, host, port, rdns, user, password)
+            eff_port = None
+        if eff_port:
+            proxy = (eff_type, eff_host, eff_port, eff_rdns, eff_user, eff_pass)
+
+    # Фолбэк: если после слияния прокси всё ещё не собран и есть GLOBAL_PROXY
+    if not proxy and GLOBAL_PROXY:
+        proxy = GLOBAL_PROXY
 
     # Пропускаем пустые слоты без сессии/канала
     if not (session or channel):
@@ -109,7 +162,9 @@ if missing_proxy:
     print(
         f"ОШИБКА: Для {acc_list} не задан прокси. "
         f"Укажите TG{{n}}_PROXY_TYPE, TG{{n}}_PROXY_HOST, TG{{n}}_PROXY_PORT "
-        f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS)."
+        f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS) — "
+        f"или задайте общий TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
+        f"(поддерживается фолбэк к TG16_PROXY_*)."
     )
     exit(1)
 
