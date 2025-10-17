@@ -94,7 +94,7 @@ if gp_type and gp_host and gp_port_str:
         gp_rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
         GLOBAL_PROXY = (gp_type, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
 
-for n in range(1, 23):
+for n in range(1, 24):
     session = os.environ.get(f"TG{n}_SESSION")
     channel = os.environ.get(f"TG{n}_CHANNEL")
 
