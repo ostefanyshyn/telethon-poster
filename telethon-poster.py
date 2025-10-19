@@ -10,6 +10,7 @@ import io
 import gspread
 import sys
 import logging
+import traceback
 from telethon.network import connection as tl_connection
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -38,6 +39,59 @@ try:
     logging.getLogger("telethon.network.mtprotosender").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
 except Exception:
     pass
+
+# === Telegram DM notifications via Bot API ===================================
+# Configure env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, optional TG_NOTIFY_LEVEL (INFO|WARNING|ERROR|CRITICAL)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TG_NOTIFY_LEVEL = os.environ.get("TG_NOTIFY_LEVEL", "ERROR").upper()
+
+def tg_notify(text: str):
+    """
+    Fire-and-forget notification to your personal chat via Bot API.
+    Does nothing if TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are not set.
+    """
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        return
+    try:
+        msg = str(text)
+        # Telegram max length ~4096
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": msg[:4000],
+                "disable_web_page_preview": True,
+            },
+            timeout=(3, 10),
+        )
+    except Exception:
+        # never break the app because of notifications
+        pass
+
+class TGBotLoggingHandler(logging.Handler):
+    """Send ERROR/CRITICAL logs (configurable) to Telegram DM."""
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            if record.exc_info:
+                msg += "\n\n" + "".join(traceback.format_exception(*record.exc_info))
+            app = os.getenv("HEROKU_APP_NAME", "telethon-poster")
+            tg_notify(f"🚨 {app}\n{msg}")
+        except Exception:
+            pass
+
+_lvl = getattr(logging, TG_NOTIFY_LEVEL, logging.ERROR)
+_tg_handler = TGBotLoggingHandler(level=_lvl)
+_tg_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+logging.getLogger().addHandler(_tg_handler)
+
+# also ship unhandled exceptions
+
+def _global_excepthook(exc_type, exc, tb):
+    logging.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
+
+sys.excepthook = _global_excepthook
 
 # Предупреждение о версии Python (Telethon может работать нестабильно на Python 3.13)
 if sys.version_info >= (3, 13):
@@ -159,8 +213,8 @@ for n in range(1, 24):
 missing_proxy = [acc["index"] for acc in accounts if not acc.get("proxy")]
 if missing_proxy:
     acc_list = ", ".join(f"TG{n}" for n in missing_proxy)
-    print(
-        f"ОШИБКА: Для {acc_list} не задан прокси. "
+    logging.error(
+        f"Для {acc_list} не задан прокси. "
         f"Укажите TG{{n}}_PROXY_TYPE, TG{{n}}_PROXY_HOST, TG{{n}}_PROXY_PORT "
         f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS) — "
         f"или задайте общий TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
@@ -727,10 +781,10 @@ async def send_post(record, row_idx, pending_indices=None):
             return acc_idx, channel_str, True, None
 
         except (tl_errors.FloodWaitError, tl_errors.SlowModeWaitError) as e:
-            print(f"ОШИБКА: TG{acc_idx} лимит Telegram: {e}")
+            logging.error(f"TG{acc_idx} лимит Telegram: {e}", exc_info=True)
             return acc_idx, channel_str, False, f"rate: {e}"
         except Exception as e:
-            print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} ошибка отправки: {e}. Пробуем повтор...")
+            logging.error(f"TG{acc_idx} ошибка отправки: {e}. Пробуем повтор...", exc_info=True)
             try:
                 await client.disconnect()
             except Exception:
@@ -756,11 +810,11 @@ async def send_post(record, row_idx, pending_indices=None):
                     try:
                         worksheet.update_cell(row_idx, col_idx, "TRUE")
                     except Exception as e_upd:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upд}")
                 SENT_RUNTIME.add(rt_key)
                 return acc_idx, channel_str, True, None
             except Exception as e2:
-                print(f"ОШИБКА: TG{acc_idx} повторная отправка не удалась: {e2}")
+                logging.error(f"TG{acc_idx} повторная отправка не удалась: {e2}", exc_info=True)
                 return acc_idx, channel_str, False, f"retry: {e2}"
 
     results = await asyncio.gather(
@@ -771,6 +825,10 @@ async def send_post(record, row_idx, pending_indices=None):
     ok = sum(1 for (_, _, s, _) in results if s)
     fail = [(i, ch, err) for (i, ch, s, err) in results if not s]
     print(f"Строка {row_idx}: перс-отправки завершены. Успешно {ok}/{len(clients_with_channels)}. Неудачи: {fail}")
+
+    # DM summary if something failed
+    if fail:
+        tg_notify(f"❗️Строка {row_idx}: {ok}/{len(clients_with_channels)} успешно.\nПроблемы: {fail}")
 
 
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
@@ -831,13 +889,13 @@ async def validate_sessions_before_start():
 
     if missing or unauthorized or failed:
         if missing:
-            print("ОШИБКА: Не заданы TG{n}_SESSION для: " + ", ".join(f"TG{n}" for n in sorted(missing)))
+            logging.error("Не заданы TG{n}_SESSION для: " + ", ".join(f"TG{n}" for n in sorted(missing)))
         if unauthorized:
-            print("ОШИБКА: Недействительные/неавторизованные сессии для: " + ", ".join(f"TG{n}" for n in sorted(unauthorized)))
+            logging.error("Недействительные/неавторизованные сессии для: " + ", ".join(f"TG{n}" for n in sorted(unauthorized)))
         if failed:
             for n, err in failed:
-                print(f"ОШИБКА: TG{n} проверка сессии завершилась ошибкой: {err}")
-        print("Завершение без интерактивного входа. Исправьте сессии/прокси и перезапустите.")
+                logging.error(f"TG{n} проверка сессии завершилась ошибкой: {err}")
+        logging.error("Завершение без интерактивного входа. Исправьте сессии/прокси и перезапустите.")
         exit(1)
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
@@ -857,6 +915,7 @@ async def main():
         if isinstance(res, Exception):
             print(f"ПРЕДУПРЕЖДЕНИЕ: клиент #{idx} не запустился: {res}")
     print("Клиенты успешно подключены. Запуск основного цикла...")
+    tg_notify("🚀 telethon-poster запущен и следит за Google Sheets")
 
     while True:
         try:
@@ -909,10 +968,10 @@ async def main():
             await asyncio.sleep(REFRESH_SECONDS)
 
         except gspread.exceptions.APIError as e:
-            print(f"ОШИБКА API Google Sheets: {e}. Повторнxая попытка через {REFRESH_SECONDS} сек.")
+            logging.error(f"ОШИБКА API Google Sheets: {e}. Повторная попытка через {REFRESH_SECONDS} сек.", exc_info=True)
             await asyncio.sleep(REFRESH_SECONDS)
         except Exception as e:
-            print(f"КРИТИЧЕСКАЯ ОШИБКА в главном цикле: {e}")
+            logging.critical(f"КРИТИЧЕСКАЯ ОШИБКА в главном цикле: {e}", exc_info=True)
             await asyncio.sleep(REFRESH_SECONDS)
 
 # --- 6. ЗАПУСК СКРИПТА ---
