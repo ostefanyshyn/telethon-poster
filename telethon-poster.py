@@ -317,6 +317,10 @@ except Exception as e:
     print(f"ПРЕДУПРЕЖДЕНИЕ: ошибка при определении флаговых столбцов: {e}")
     SENT_FLAG_INDICES = []
 
+# Fallback: если нет числовых флагов в таблице, шлём во ВСЕ каналы
+if not SENT_FLAG_INDICES:
+    SENT_FLAG_INDICES = [acc["index"] for acc in accounts]
+
 def get_col_index(name: str):
     idx = HEADER_TO_COL.get(name)
     if not idx:
@@ -972,6 +976,7 @@ async def main():
                 ]
                 if not pending_idx:
                     continue
+                print(f"Строка {idx}: каналы к отправке -> {pending_idx}")
 
                 time_str = record.get("Время")
                 if not time_str:
