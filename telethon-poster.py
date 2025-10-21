@@ -206,6 +206,12 @@ except Exception:
     print("ОШИБКА: TG_API_ID должен быть числом.")
     exit(1)
 
+# Один общий аккаунт для всех каналов
+TG_SESSION = os.environ.get("TG_SESSION") or os.environ.get("TG1_SESSION")
+if not TG_SESSION:
+    print("ОШИБКА: Укажите TG_SESSION (StringSession одного аккаунта) в переменных окружения.")
+    exit(1)
+
 # Глобальный (общий) прокси (опционально): TG_PROXY_* или TG16_PROXY_* как фолбэк
 GLOBAL_PROXY = None
 # 1) Предпочтительно TG_PROXY_* (или PROXY_*)
@@ -237,84 +243,30 @@ if gp_type and gp_host and gp_port_str:
 # Требование наличия прокси по переключателю (по умолчанию — включено)
 REQUIRE_PROXY = str(os.environ.get("REQUIRE_PROXY", "true")).lower() in ("1", "true", "yes", "on")
 
-for n in range(1, 24):
-    session = os.environ.get(f"TG{n}_SESSION")
-    channel = os.environ.get(f"TG{n}_CHANNEL")
+# Собираем до 20 каналов TG{n}_CHANNEL
+CHANNELS_BY_INDEX = {}
+for n in range(1, 21):
+    ch = os.environ.get(f"TG{n}_CHANNEL")
+    if ch:
+        CHANNELS_BY_INDEX[n] = ch
 
-    # Параметры прокси для этого аккаунта (опционально)
-    p_type = os.environ.get(f"TG{n}_PROXY_TYPE")      # например: 'socks5' или 'http'
-    p_host = os.environ.get(f"TG{n}_PROXY_HOST")
-    p_port_str = os.environ.get(f"TG{n}_PROXY_PORT")
-    p_rdns_raw = os.environ.get(f"TG{n}_PROXY_RDNS")  # None если не задано
-    p_user = os.environ.get(f"TG{n}_PROXY_USER")
-    p_pass = os.environ.get(f"TG{n}_PROXY_PASS")
+if not CHANNELS_BY_INDEX:
+    print("ОШИБКА: Не задан ни один TG{n}_CHANNEL (например, TG1_CHANNEL).")
+    exit(1)
 
-    # Слияние с глобальным прокси: любые недостающие поля берём из GLOBAL_PROXY
-    gp_type = GLOBAL_PROXY[0] if GLOBAL_PROXY else None
-    gp_host = GLOBAL_PROXY[1] if GLOBAL_PROXY else None
-    gp_port = GLOBAL_PROXY[2] if GLOBAL_PROXY else None
-    gp_rdns = GLOBAL_PROXY[3] if GLOBAL_PROXY else True
-    gp_user = GLOBAL_PROXY[4] if GLOBAL_PROXY else None
-    gp_pass = GLOBAL_PROXY[5] if GLOBAL_PROXY else None
-
-    eff_type = p_type or gp_type
-    eff_host = p_host or gp_host
-    eff_port_str = p_port_str or (str(gp_port) if gp_port else None)
-
-    # RDNS: используем значение из TG{n}_PROXY_RDNS, если задано; иначе из GLOBAL_PROXY; иначе true
-    if p_rdns_raw is not None:
-        eff_rdns = str(p_rdns_raw).lower() in ("1", "true", "yes", "y", "on")
-    else:
-        eff_rdns = bool(gp_rdns)
-
-    # USER/PASS: пер-аккаунтные имеют приоритет; если не заданы — берём из GLOBAL_PROXY
-    eff_user = p_user if p_user is not None else gp_user
-    eff_pass = p_pass if p_pass is not None else gp_pass
-
-    # Сборка кортежа прокси, если после слияния есть тип/хост/порт
-    proxy = None
-    if eff_type and eff_host and eff_port_str:
-        try:
-            eff_port = int(eff_port_str)
-        except Exception:
-            eff_port = None
-        if eff_port:
-            proxy = (eff_type, eff_host, eff_port, eff_rdns, eff_user, eff_pass)
-
-    # Фолбэк: если после слияния прокси всё ещё не собран и есть GLOBAL_PROXY
-    if not proxy and GLOBAL_PROXY:
-        proxy = GLOBAL_PROXY
-
-    # Пропускаем пустые слоты без сессии/канала
-    if not (session or channel):
-        continue
-
-    accounts.append({
-        "index": n,
-        "api_id": TG_API_ID,
-        "api_hash": TG_API_HASH,
-        "session": session,
-        "channel": channel,
-        "proxy": proxy,
-    })
+# Совместимость: список с индексами и каналами для логики флагов в таблице
+accounts = [{"index": i, "channel": ch} for i, ch in sorted(CHANNELS_BY_INDEX.items())]
 
 # Проверка прокси — по переключателю REQUIRE_PROXY (по умолчанию обязателен)
-missing_proxy = [acc["index"] for acc in accounts if not acc.get("proxy")]
-if missing_proxy:
-    acc_list = ", ".join(f"TG{n}" for n in missing_proxy)
-    if REQUIRE_PROXY:
-        logging.error(
-            f"Для {acc_list} не задан прокси. "
-            f"Укажите TG{{n}}_PROXY_TYPE, TG{{n}}_PROXY_HOST, TG{{n}}_PROXY_PORT "
-            f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS) — "
-            f"или задайте общий TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
-            f"(поддерживается фолбэк к TG16_PROXY_*). Либо установите REQUIRE_PROXY=0, чтобы разрешить работу без прокси."
-        )
-        exit(1)
-    else:
-        logging.warning(
-            f"Прокси не задан для: {acc_list}. REQUIRE_PROXY=0 — продолжаем без прокси."
-        )
+if REQUIRE_PROXY and not GLOBAL_PROXY:
+    logging.error(
+        "Прокси не задан. Укажите TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
+        "(при необходимости TG_PROXY_USER/TG_PROXY_PASS/TG_PROXY_RDNS) — "
+        "или установите REQUIRE_PROXY=0, чтобы разрешить работу без прокси."
+    )
+    exit(1)
+elif not GLOBAL_PROXY:
+    logging.warning("REQUIRE_PROXY=0 — продолжаем без прокси.")
 
 
 # Интервал обновления (в секундах)
@@ -374,29 +326,26 @@ def get_col_index(name: str):
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
 
-# Настройка клиентов Telegram (динамически)
+# Настройка одного клиента Telegram (общий для всех каналов)
 clients = []
-for i, acc in enumerate(accounts):
-    prx = acc.get("proxy")
-    session_or_name = StringSession(acc["session"]) if acc["session"] else f"tg{i+1}_session"
-    clients.append(
-        TelegramClient(
-            session_or_name,
-            acc["api_id"],
-            acc["api_hash"],
-            proxy=prx,
-            connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
-            request_retries=TELETHON_REQUEST_RETRIES,
-            connection_retries=TELETHON_CONNECTION_RETRIES,
-            retry_delay=TELETHON_RETRY_DELAY,
-            timeout=TELETHON_TIMEOUT,
-            flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
-        )
-    )
+common_proxy = GLOBAL_PROXY
+client = TelegramClient(
+    StringSession(TG_SESSION),
+    TG_API_ID,
+    TG_API_HASH,
+    proxy=common_proxy,
+    connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
+    request_retries=TELETHON_REQUEST_RETRIES,
+    connection_retries=TELETHON_CONNECTION_RETRIES,
+    retry_delay=TELETHON_RETRY_DELAY,
+    timeout=TELETHON_TIMEOUT,
+    flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
+)
+clients.append(client)
 
-# Удобные словари доступа по индексу аккаунта
+# Удобные словари доступа по индексу (все индексы используют один и тот же клиент)
 ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
-CLIENT_BY_INDEX = {acc["index"]: c for c, acc in zip(clients, accounts)}
+CLIENT_BY_INDEX = {i: client for i in ACC_BY_INDEX.keys()}
 
 # Runtime de-duplication guard: prevent repeating sends if Google Sheets flag update lags
 SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
@@ -944,69 +893,30 @@ async def send_post(record, row_idx, pending_indices=None):
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
 async def validate_sessions_before_start():
     """
-    Параллельно проверяет, что у каждого аккаунта есть StringSession и что он авторизован.
-    Делает короткие таймауты на соединение/проверку, чтобы не "висеть" на недоступных прокси.
-    Если найдены проблемы, печатает подробности и завершает процесс без интерактива.
-    Настройки таймаутов и конкуренции регулируются переменными окружения:
-      - VALIDATION_CONNECT_TIMEOUT (сек)
-      - VALIDATION_AUTH_TIMEOUT (сек)
-      - VALIDATION_DISCONNECT_TIMEOUT (сек)
-      - VALIDATION_CONCURRENCY (кол-во одновременных проверок)
+    Проверяет, что общий StringSession авторизован. Короткие таймауты,
+    чтобы не висеть на недоступной сети/прокси.
     """
-    print(f"Проверка сессий Telegram... (всего аккаунтов: {len(ACC_BY_INDEX)})")
-
-    missing = []       # TG{n} без TG{n}_SESSION в окружении
-    unauthorized = []  # TG{n} сессия есть, но не авторизована (Telethon потребовал бы вход)
-    failed = []        # TG{n} проверка не удалась по исключению/таймауту
-
-    sem = asyncio.Semaphore(max(1, int(VALIDATION_CONCURRENCY)))
-
-    async def _check_one(acc_idx: int, acc: dict):
-        client = CLIENT_BY_INDEX[acc_idx]
-
-        if not acc.get("session"):
-            missing.append(acc_idx)
-            print(f"TG{acc_idx}: нет TG{acc_idx}_SESSION — пропуск")
-            return
-
-        try:
-            print(f"TG{acc_idx}: подключение через прокси...")
-            if not client.is_connected():
-                await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
-            authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
-            if not authed:
-                unauthorized.append(acc_idx)
-                print(f"TG{acc_idx}: сессия НЕ авторизована")
-            else:
-                print(f"TG{acc_idx}: OK")
-        except asyncio.TimeoutError:
-            failed.append((acc_idx, f"timeout ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)"))
-            print(f"TG{acc_idx}: timeout при проверке")
-        except Exception as e:
-            failed.append((acc_idx, str(e)))
-            print(f"TG{acc_idx}: ошибка проверки: {e}")
-        finally:
-            try:
-                await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
-            except Exception:
-                pass
-
-    async def _worker(acc_idx: int, acc: dict):
-        async with sem:
-            await _check_one(acc_idx, acc)
-
-    await asyncio.gather(*(_worker(i, acc) for i, acc in ACC_BY_INDEX.items()))
-
-    if missing or unauthorized or failed:
-        if missing:
-            logging.error("Не заданы TG{n}_SESSION для: " + ", ".join(f"TG{n}" for n in sorted(missing)))
-        if unauthorized:
-            logging.error("Недействительные/неавторизованные сессии для: " + ", ".join(f"TG{n}" for n in sorted(unauthorized)))
-        if failed:
-            for n, err in failed:
-                logging.error(f"TG{n} проверка сессии завершилась ошибкой: {err}")
-        logging.error("Завершение без интерактивного входа. Исправьте сессии/прокси и перезапустите.")
+    print("Проверка сессии Telegram... (один аккаунт)")
+    client = clients[0]
+    try:
+        if not client.is_connected():
+            await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
+        authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
+        if not authed:
+            logging.error("Сессия не авторизована. Проверь TG_SESSION.")
+            exit(1)
+        print("TG: OK")
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout при проверке сессии ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)")
         exit(1)
+    except Exception as e:
+        logging.error(f"Ошибка проверки сессии: {e}")
+        exit(1)
+    finally:
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
+        except Exception:
+            pass
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
@@ -1031,13 +941,18 @@ async def main():
         try:
             alive = sum(1 for c in clients if c.is_connected())
             # Proactive reconnect sweep to recover from "Server closed the connection" events
+            seen = set()
             for acc_idx, client in CLIENT_BY_INDEX.items():
+                key = id(client)
+                if key in seen:
+                    continue
+                seen.add(key)
                 if not client.is_connected():
                     try:
                         await client.connect()
-                        print(f"TG{acc_idx} переподключен.")
+                        print("TG переподключен.")
                     except Exception as e:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} не удалось переподключить: {e}")
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось переподключить общий клиент: {e}")
             print(f"Активных клиентов: {alive}/{len(clients)}")
             print(f"Проверка таблицы... {datetime.now(tz).strftime('%H:%M:%S')}")
             records = worksheet.get_all_records()
