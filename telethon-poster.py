@@ -234,6 +234,9 @@ if gp_type and gp_host and gp_port_str:
         gp_rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
         GLOBAL_PROXY = (gp_type, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
 
+# Требование наличия прокси по переключателю (по умолчанию — включено)
+REQUIRE_PROXY = str(os.environ.get("REQUIRE_PROXY", "true")).lower() in ("1", "true", "yes", "on")
+
 for n in range(1, 24):
     session = os.environ.get(f"TG{n}_SESSION")
     channel = os.environ.get(f"TG{n}_CHANNEL")
@@ -295,18 +298,23 @@ for n in range(1, 24):
         "proxy": proxy,
     })
 
-# Требуем наличие прокси для каждого аккаунта. Без прокси работать запрещено.
+# Проверка прокси — по переключателю REQUIRE_PROXY (по умолчанию обязателен)
 missing_proxy = [acc["index"] for acc in accounts if not acc.get("proxy")]
 if missing_proxy:
     acc_list = ", ".join(f"TG{n}" for n in missing_proxy)
-    logging.error(
-        f"Для {acc_list} не задан прокси. "
-        f"Укажите TG{{n}}_PROXY_TYPE, TG{{n}}_PROXY_HOST, TG{{n}}_PROXY_PORT "
-        f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS) — "
-        f"или задайте общий TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
-        f"(поддерживается фолбэк к TG16_PROXY_*)."
-    )
-    exit(1)
+    if REQUIRE_PROXY:
+        logging.error(
+            f"Для {acc_list} не задан прокси. "
+            f"Укажите TG{{n}}_PROXY_TYPE, TG{{n}}_PROXY_HOST, TG{{n}}_PROXY_PORT "
+            f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS) — "
+            f"или задайте общий TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
+            f"(поддерживается фолбэк к TG16_PROXY_*). Либо установите REQUIRE_PROXY=0, чтобы разрешить работу без прокси."
+        )
+        exit(1)
+    else:
+        logging.warning(
+            f"Прокси не задан для: {acc_list}. REQUIRE_PROXY=0 — продолжаем без прокси."
+        )
 
 
 # Интервал обновления (в секундах)
