@@ -26,7 +26,6 @@ try:
 except Exception:
     _PIL_AVAILABLE = False
 
-
 # Загрузка переменных из .env файла
 load_dotenv()
 
@@ -84,7 +83,6 @@ class TGBotLoggingHandler(logging.Handler):
 _lvl = getattr(logging, TG_NOTIFY_LEVEL, logging.ERROR)
 _tg_handler = TGBotLoggingHandler(level=_lvl)
 _tg_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-
 logging.getLogger().addHandler(_tg_handler)
 
 # Helper to log and DM-notify skipped publications
@@ -97,9 +95,7 @@ def _notify_media_issue(row_idx, reason):
     logging.warning(f"Строка {row_idx}: {reason}")
     tg_notify(f"ℹ️ Строка {row_idx}: {reason}")
 
-# Attempt download, and if it fails try toggling extension (.jpg <-> .mp4)
-# Returns (bytes, final_url, content_type) or raises the original exception
-# Sends a TG info note when fallback succeeds
+# --- MEDIA DOWNLOAD (с подбором расширений) ----------------------------------
 
 def _swap_media_extension(url: str):
     url_str = str(url or "")
@@ -109,7 +105,6 @@ def _swap_media_extension(url: str):
     if lower.endswith(".mp4"):
         return url_str[:-4] + ".jpg"
     return None
-
 
 def _download_with_fallback(url: str, row_idx: int, timeout=(5, 60)):
     try:
@@ -126,10 +121,8 @@ def _download_with_fallback(url: str, row_idx: int, timeout=(5, 60)):
             tg_notify(f"ℹ️ Строка {row_idx}: {url} не загрузилась; использую {alt}.")
             return resp.content, alt, resp.headers.get('Content-Type', '').lower()
         except Exception:
-            # Re-raise the original error for clearer context upstream
             raise first_e
 
- # Helper: check if URL already has a known media extension we handle
 _DEF_EXTS = (
     ".jpg", ".JPG",
     ".jpeg", ".JPEG",
@@ -143,12 +136,9 @@ def _has_known_ext(url: str) -> bool:
     u = str(url or "").lower()
     return any(u.endswith(ext) for ext in _DEF_EXTS)
 
-# Try to download a URL; if it has no extension, try adding .jpg then .mp4
-# Returns (bytes, final_url, content_type)
 def _download_with_ext_guess(url: str, row_idx: int, timeout=(5, 60)):
     u = str(url or "")
     if _has_known_ext(u):
-        # Will also try toggled extension internally on failure
         return _download_with_fallback(u, row_idx, timeout=timeout)
 
     last_err = None
@@ -169,14 +159,10 @@ def _download_with_ext_guess(url: str, row_idx: int, timeout=(5, 60)):
         except Exception as e:
             last_err = e
             continue
-    # None of the extensions worked — raise the last error for context
     raise last_err or Exception("Не удалось скачать медиа ни с одним из расширений")
-
-# also ship unhandled exceptions
 
 def _global_excepthook(exc_type, exc, tb):
     logging.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
-
 sys.excepthook = _global_excepthook
 
 # Предупреждение о версии Python (Telethon может работать нестабильно на Python 3.13)
@@ -190,13 +176,9 @@ if sys.version_info >= (3, 13):
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON")
 
-# Telegram аккаунты: общий TG_API_ID/TG_API_HASH и пер-аккаунтные TG{n}_SESSION, TG{n}_CHANNEL, прокси
-accounts = []
-
-# Общие Telegram API креды (единые для всех аккаунтов)
+# Общие Telegram API креды
 TG_API_ID_STR = os.environ.get("TG_API_ID")
 TG_API_HASH = os.environ.get("TG_API_HASH")
-
 if not TG_API_ID_STR or not TG_API_HASH:
     print("ОШИБКА: Укажите общие TG_API_ID и TG_API_HASH в переменных окружения.")
     exit(1)
@@ -214,7 +196,6 @@ if not TG_SESSION:
 
 # Глобальный (общий) прокси (опционально): TG_PROXY_* или TG16_PROXY_* как фолбэк
 GLOBAL_PROXY = None
-# 1) Предпочтительно TG_PROXY_* (или PROXY_*)
 gp_type = os.environ.get("TG_PROXY_TYPE") or os.environ.get("PROXY_TYPE")
 gp_host = os.environ.get("TG_PROXY_HOST") or os.environ.get("PROXY_HOST")
 gp_port_str = os.environ.get("TG_PROXY_PORT") or os.environ.get("PROXY_PORT")
@@ -222,7 +203,7 @@ gp_rdns_str = os.environ.get("TG_PROXY_RDNS", os.environ.get("PROXY_RDNS", "true
 gp_user = os.environ.get("TG_PROXY_USER") or os.environ.get("PROXY_USER")
 gp_pass = os.environ.get("TG_PROXY_PASS") or os.environ.get("PROXY_PASS")
 
-# 2) Если TG_PROXY_* не заданы, используем TG16_PROXY_* (по просьбе пользователя)
+# Фолбэк к TG16_PROXY_*
 if not (gp_type and gp_host and gp_port_str):
     gp_type = os.environ.get("TG16_PROXY_TYPE", gp_type)
     gp_host = os.environ.get("TG16_PROXY_HOST", gp_host)
@@ -268,10 +249,8 @@ if REQUIRE_PROXY and not GLOBAL_PROXY:
 elif not GLOBAL_PROXY:
     logging.warning("REQUIRE_PROXY=0 — продолжаем без прокси.")
 
-
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
-
 
 # --- Validation tunables (speed up startup; override via env) ---
 VALIDATION_CONNECT_TIMEOUT = int(os.environ.get("VALIDATION_CONNECT_TIMEOUT", "30"))
@@ -356,7 +335,6 @@ SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР + ТИПОГРАФИКА ---
 
-# Класс для обработки кастомных эмодзи в HTML
 class CustomHtml:
     @staticmethod
     def parse(text):
@@ -397,7 +375,6 @@ emoji_ids = {
     15: 5334544901428229844,  # ℹ️ (info)
 }
 
-# Unicode-заменители для отображения в коде
 emoji_placeholders = {
     1: "💭",  2: "💭",
     3: "👑",
@@ -409,67 +386,49 @@ emoji_placeholders = {
     15: "ℹ️",
 }
 
-# Пробелы/переводы строк для стабильной типографики
+# Типографика короны
 CROWN_OFFSET_ADJUST = int(os.environ.get("CROWN_OFFSET_ADJUST", "0"))
 CROWN_OFFSET_SCALE = float(os.environ.get("CROWN_OFFSET_SCALE", "1.25"))
-
-# Пробелы/переводы строк для стабильной типографики
 CROWN_THIN = "\u2009"  # тонкий пробел БЕЗ word-joiner — только для отступа короны
-NNBSP = "\u202F"   # узкий неразрывный пробел (для отступа короны)
-WORD_JOINER = "\u2060"  # WORD JOINER (запрещает перенос)
-THIN  = "\u2009" + WORD_JOINER  # тонкий + запрет переноса (комбо)
+NNBSP = "\u202F"       # узкий неразрывный пробел
+WORD_JOINER = "\u2060" # WORD JOINER
+THIN  = "\u2009" + WORD_JOINER
 CROWN_OFFSET_ADJUST = int(os.environ.get("CROWN_OFFSET_ADJUST", "0"))
 CROWN_OFFSET_SCALE = float(os.environ.get("CROWN_OFFSET_SCALE", "1.25"))
 
-# === Pixel-based width helpers (for precise crown centering) ===
-# Configurable font and sizing (works on render.com). If font is missing, we fall back safely.
-CROWN_FONT_PATH = os.environ.get("CROWN_FONT_PATH", "")  # e.g. ./fonts/DejaVuSans.ttf
+# Pixel-based width helpers
+CROWN_FONT_PATH = os.environ.get("CROWN_FONT_PATH", "")
 CROWN_FONT_SIZE = int(os.environ.get("CROWN_FONT_SIZE", "18"))
-# Scale factor for custom-emoji visual width relative to the font's 1em (tweak if crown looks off)
 CROWN_EM_WIDTH_SCALE = float(os.environ.get("CROWN_EM_WIDTH_SCALE", "1.0"))
-# Optional pixel adjustment (+/-) after centering math
 CROWN_OFFSET_PX_ADJUST = int(os.environ.get("CROWN_OFFSET_PX_ADJUST", "0"))
-
-# Device preset and fine-tune options for better mobile (iOS) rendering
 CROWN_PRESET = os.environ.get("CROWN_PRESET", "").lower()  # e.g. "ios"
 CROWN_FINE_TUNE = os.environ.get("CROWN_FINE_TUNE", "thin").lower()  # "thin" | "none"
 
-# Apply iOS defaults only if user didn't explicitly override via env
 if CROWN_PRESET == "ios":
     if "CROWN_EM_WIDTH_SCALE" not in os.environ:
-        CROWN_EM_WIDTH_SCALE = 0.96  # iOS tends to render slightly wider vs 1em heuristic
+        CROWN_EM_WIDTH_SCALE = 0.96
     if "CROWN_OFFSET_PX_ADJUST" not in os.environ:
-        CROWN_OFFSET_PX_ADJUST = 1   # nudge crown by ~1px to the right
+        CROWN_OFFSET_PX_ADJUST = 1
 _CROWN_FONT_SOURCE = None
 
-# Lazy-load a font that supports Cyrillic on typical Linux containers
 def _load_crown_font():
     global _CROWN_FONT_SOURCE
     if not _PIL_AVAILABLE:
         return None
-
-    # Base dir of this file for relative lookups like ./fonts/*.ttf
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except Exception:
         script_dir = os.getcwd()
-
-    # Try env-provided font first
     paths_to_try = [p for p in [CROWN_FONT_PATH] if p]
-
-    # Common Linux locations (present on many containers)
     paths_to_try += [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         "/usr/local/share/fonts/DejaVuSans.ttf",
-        # Typical relative locations in repo/container
         os.path.join(script_dir, "fonts", "DejaVuSans.ttf"),
         os.path.join(script_dir, "fonts", "dejavu", "DejaVuSans.ttf"),
         "./fonts/DejaVuSans.ttf",
         "fonts/DejaVuSans.ttf",
     ]
-
-    # Also scan ./fonts for any .ttf (accept the first that loads)
     for d in [os.path.join(script_dir, "fonts"), "./fonts", "fonts"]:
         try:
             if os.path.isdir(d):
@@ -480,7 +439,6 @@ def _load_crown_font():
                             paths_to_try.append(p)
         except Exception:
             pass
-
     for p in paths_to_try:
         try:
             if p and os.path.exists(p):
@@ -492,22 +450,16 @@ def _load_crown_font():
                     _CROWN_FONT_SOURCE = f"system:{p}"
                 return ImageFont.truetype(p, CROWN_FONT_SIZE)
         except Exception:
-            # Try next candidate
             pass
-
-    # Optional: one-time debug to help users
     try:
         print("[CROWN] Не удалось найти валидный TTF. Проверенные пути:")
         for p in paths_to_try:
             print("   -", p)
     except Exception:
         pass
-
-    # No acceptable TTF font found; do not fall back to Pillow's bitmap font
     return None
 
 _CROWN_FONT = _load_crown_font()
-
 
 if _PIL_AVAILABLE and _CROWN_FONT:
     if hasattr(_CROWN_FONT, "getlength"):
@@ -522,26 +474,21 @@ else:
 print(f"[CROWN] Preset={CROWN_PRESET or 'default'}, fine_tune={CROWN_FINE_TUNE}")
 
 _tag_re = re.compile(r"<[^>]+>")
-
 def _strip_tags(s: str) -> str:
     return _tag_re.sub("", str(s or "")).strip()
 
-# Approximate text width in pixels using the selected font; safe fallback if PIL/font is unavailable
 def _text_width_px(s: str) -> int:
     plain = str(s or "")
     if _PIL_AVAILABLE and _CROWN_FONT:
         try:
             if hasattr(_CROWN_FONT, "getlength"):
                 return int(round(_CROWN_FONT.getlength(plain)))
-            # Older Pillow fallback
             bbox = _CROWN_FONT.getbbox(plain)
             return max(0, int(bbox[2] - bbox[0]))
         except Exception:
             pass
-    # Heuristic fallback (~7 px per character)
     return int(round(len(plain) * 7))
 
-# Width of a space-like character (NNBSP by default) in pixels
 def _space_width_px(ch: str = NNBSP) -> int:
     if _PIL_AVAILABLE and _CROWN_FONT:
         try:
@@ -551,57 +498,29 @@ def _space_width_px(ch: str = NNBSP) -> int:
             return max(1, int(bbox[2] - bbox[0]))
         except Exception:
             pass
-    return 7  # heuristic fallback
+    return 7
 
 def _plain_len(s: str) -> int:
-    """Приблизительная 'ширина' имени: убираем теги и считаем символы."""
     txt = re.sub(r"<[^>]+>", "", str(s or "")).strip()
     return len(txt)
 
 def crown_over_name_lines(name: str, crown_html: str):
-    """
-    Возвращает две строки: (1) корона с автоотступом, (2) имя.
-    Смещение вычисляется по ширине текста в пикселях (через Pillow, если доступно).
-    На render.com это работает из коробки при наличии Pillow и шрифта; при их отсутствии
-    используется безопасный эвристический фолбэк.
-    Доступные настройки через ENV:
-      - CROWN_FONT_PATH: путь к .ttf (например, DejaVuSans.ttf)
-      - CROWN_FONT_SIZE: размер шрифта в px (по умолчанию 18)
-      - CROWN_EM_WIDTH_SCALE: множитель ширины эмодзи относительно 1em
-      - CROWN_OFFSET_PX_ADJUST: ручная пиксельная подстройка смещения
-    """
     name_plain = _strip_tags(name)
-
-    # Ширина имени в пикселях
     name_px = _text_width_px(name_plain)
-
-    # Оценка ширины "эмодзи-короны" в пикселях: берём 1em (ширину символа "M") и масштабируем
-    em_px = _space_width_px("M")  # 1em approximately
+    em_px = _space_width_px("M")
     crown_px = max(1, int(round(em_px * CROWN_EM_WIDTH_SCALE)))
-
-    # Центрируем корону по центру имени
     offset_px = max(0, int(round(name_px / 2 - crown_px / 2)))
-
-    # Ручная подстройка в пикселях (если нужно немного сдвинуть)
     offset_px += CROWN_OFFSET_PX_ADJUST
-
-    # Конвертируем пиксели в количество узких неразрывных пробелов
     nnbsp_px = _space_width_px(NNBSP)
-    # Coarse step by narrow NBSP
     n_spaces = max(0, int(offset_px // max(1, nnbsp_px)))
     leftover_px = max(0, int(offset_px - n_spaces * max(1, nnbsp_px)))
-
-    # Fine-tune with THIN spaces (smaller width) to better match iOS rendering
     thin_count = 0
     if CROWN_FINE_TUNE == "thin":
         thin_px = _space_width_px(CROWN_THIN)
         if thin_px > 0:
             thin_count = int(round(leftover_px / thin_px))
-            thin_count = max(0, min(thin_count, 8))  # cap to avoid overshoot
-
-    # Backward-compatible manual adjust in units of NNBSP
+            thin_count = max(0, min(thin_count, 8))
     n_spaces += max(0, CROWN_OFFSET_ADJUST)
-
     indent = (NNBSP * n_spaces) + (CROWN_THIN * thin_count)
     line1 = f"{indent}{crown_html}"
     line2 = f"<b><i>{name}</i></b>"
@@ -611,7 +530,6 @@ def crown_over_name_lines(name: str, crown_html: str):
 
 async def send_post(record, row_idx, pending_indices=None):
     """Собирает, форматирует и отправляет пост на основе строки из таблицы."""
-    # Парсинг данных из записи
     status = record.get("Статус", "")
     name = record.get("Имя", "")
     services = record.get("Услуги", "")
@@ -641,40 +559,34 @@ async def send_post(record, row_idx, pending_indices=None):
     if weight and str(weight).strip(): param_lines.append(f"Вес - {weight}")
     if bust and str(bust).strip():  param_lines.append(f"Грудь - {bust}")
 
-    # Блоки сообщения (между блоками — ровно одна пустая строка)
     blocks = []
-
     # 1) Статус
     blocks.append(
         f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>{THIN}'
         f'<i>{status}</i>{THIN}'
         f'<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
     )
-
     # 2) Коронка над именем (2 строки)
     crown_html = f'<a href="emoji/{emoji_ids[3]}">{emoji_placeholders[3]}</a>'
     line1, line2 = crown_over_name_lines(name, crown_html)
     if nationality_flag:
         line2 = f"{line2}{THIN}{nationality_flag}"
     blocks.append("\n".join([line1, line2]))
-
     # 3) Фото
     foto_checks = "".join(f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>' for i in range(4, 8))
     blocks.append(f'<b>Фото{THIN}{foto_checks}</b>')
-
-    # 4) Услуги/Доп.услуги (если есть)
+    # 4) Услуги/Доп.услуги
     services_lines = []
     if services and str(services).strip():
         services_lines += ["Услуги:", f'<b><i>{services}</i></b>']
     if extra_services and str(extra_services).strip():
         if services_lines:
-            services_lines.append("")   # одна пустая строка внутри блока между разделами
+            services_lines.append("")
         services_lines += ["Доп. услуги:", f'<b><i>{extra_services}</i></b>']
     if services_lines:
         inner = "\n".join(services_lines)
         blocks.append(f"<blockquote>{inner}</blockquote>")
-
-    # 5) Параметры (если есть)
+    # 5) Параметры
     if param_lines:
         params_header = (
             f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>{THIN}'
@@ -682,8 +594,7 @@ async def send_post(record, row_idx, pending_indices=None):
             f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>'
         )
         blocks.append(params_header + "\n" + '<b><i>' + "\n".join(param_lines) + '</i></b>')
-
-    # 6) Цены (если есть)
+    # 6) Цены
     def _fmt_price(val):
         try:
             num = float(str(val).replace(' ', '').replace(',', '.'))
@@ -691,7 +602,6 @@ async def send_post(record, row_idx, pending_indices=None):
             return f"{format(amount, ',d').replace(',', '.')} AMD"
         except Exception:
             return f"{val} AMD"
-
     price_lines = []
     if express_price and str(express_price).strip(): price_lines.append(f"Express - {_fmt_price(express_price)}")
     if incall_price and str(incall_price).strip():  price_lines.append(f"Incall - {_fmt_price(incall_price)}")
@@ -703,8 +613,7 @@ async def send_post(record, row_idx, pending_indices=None):
             f'<a href="emoji/{emoji_ids[11]}">{emoji_placeholders[11]}</a>'
         )
         blocks.append(price_header + "\n" + '<b><i>' + "\n".join(price_lines) + '</i></b>')
-
-    # 6.5) Примечание (если есть)
+    # 6.5) Примечание
     if note_text and str(note_text).strip():
         note_header = (
             f'<a href="emoji/{emoji_ids[15]}">{emoji_placeholders[15]}</a>{THIN}'
@@ -712,8 +621,7 @@ async def send_post(record, row_idx, pending_indices=None):
             f'<a href="emoji/{emoji_ids[15]}">{emoji_placeholders[15]}</a>'
         )
         blocks.append(note_header + "\n" + '<b><i>' + str(note_text).strip() + '</i></b>')
-
-    # 7) Призыв + контакты (БЕЗ пустой строки между ними)
+    # 7) Призыв + контакты
     cta_and_contacts = [
         f'<a href="emoji/{emoji_ids[12]}">{emoji_placeholders[12]}</a>'
         f'{THIN}<b><i>Назначь встречу уже сегодня!</i></b>{THIN}'
@@ -731,7 +639,6 @@ async def send_post(record, row_idx, pending_indices=None):
         )
     blocks.append("\n".join(cta_and_contacts))
 
-    # --- финальная склейка: ОДНА пустая строка между блоками ---
     message_html = "\n\n".join(blocks)
 
     # --- медиа ---
@@ -741,18 +648,14 @@ async def send_post(record, row_idx, pending_indices=None):
         url = record.get(header)
         if url and isinstance(url, str) and url.startswith("http"):
             media_urls.append(url)
-
     if not media_urls:
         _notify_skip(row_idx, "Нет ни одной ссылки на медиа. Публикация пропущена.")
         return
-
-    # Если есть дубликаты ссылок — пропускаем публикацию
     if media_urls and len(set(media_urls)) != len(media_urls):
         _notify_skip(row_idx, "Обнаружены дубликаты ссылок на медиа. Публикация пропущена.")
         return
 
     print(f"Найдено {len(media_urls)} URL-адресов для строки {row_idx}.")
-
     media_data = []
     if media_urls:
         for url_idx, url in enumerate(media_urls, start=1):
@@ -777,7 +680,6 @@ async def send_post(record, row_idx, pending_indices=None):
                     _notify_media_issue(row_idx, f"Не удалось загрузить медиа {url} — {e}. Пропускаю файл №{url_idx} и продолжаю.")
                 continue
 
-    # Если ничего не загрузилось — пропускаем публикацию; иначе продолжаем даже при частичном успехе
     if not media_data:
         _notify_skip(row_idx, "Не удалось загрузить ни одно медиа. Публикация пропущена.")
         return
@@ -786,10 +688,10 @@ async def send_post(record, row_idx, pending_indices=None):
 
     # --- отправка ---
     if pending_indices is None:
+        # Без числовых столбцов: отправляем во все каналы, кроме тех, где столбец есть и там TRUE
         target_indexes = [
             i for i, acc in ACC_BY_INDEX.items()
-            if i in SENT_FLAG_INDICES and acc.get("channel")
-            and str(record.get(str(i), record.get(i, ""))).upper() != "TRUE"
+            if acc.get("channel") and str(record.get(str(i), record.get(i, ""))).upper() != "TRUE"
         ]
     else:
         target_indexes = [i for i in pending_indices if i in ACC_BY_INDEX and ACC_BY_INDEX[i].get("channel")]
@@ -799,7 +701,6 @@ async def send_post(record, row_idx, pending_indices=None):
     async def _send_to_one(client, acc):
         channel_str = acc.get("channel")
         acc_idx = acc.get("index")
-        # Skip if we already sent this row to this account in this process
         rt_key = (row_idx, acc_idx)
         if rt_key in SENT_RUNTIME:
             return acc_idx, channel_str, True, "runtime-dup-skip"
@@ -814,11 +715,11 @@ async def send_post(record, row_idx, pending_indices=None):
             return acc_idx, channel_str, False, f"connect: {e}"
 
         try:
-            channel = int(channel_str)
-        except (ValueError, TypeError):
-            channel = channel_str
+            try:
+                channel = int(channel_str)
+            except (ValueError, TypeError):
+                channel = channel_str
 
-        try:
             if media_data:
                 file_objs = []
                 for data, fname in media_data:
@@ -832,7 +733,7 @@ async def send_post(record, row_idx, pending_indices=None):
                     channel, message_html, parse_mode=CustomHtml()
                 )
 
-            # отметить флаг
+            # отметить флаг, если столбец существует
             flag_name = str(acc_idx)
             col_idx = get_col_index(flag_name)
             if col_idx:
@@ -866,13 +767,12 @@ async def send_post(record, row_idx, pending_indices=None):
                     await client.send_message(
                         channel, message_html, parse_mode=CustomHtml()
                     )
-                # отметить флаг
                 flag_name = str(acc_idx)
                 col_idx = get_col_index(flag_name)
                 if col_idx:
                     try:
                         worksheet.update_cell(row_idx, col_idx, "TRUE")
-                    except Exception as e_upд:
+                    except Exception as e_upd:
                         print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upд}")
                 SENT_RUNTIME.add(rt_key)
                 return acc_idx, channel_str, True, None
@@ -889,12 +789,11 @@ async def send_post(record, row_idx, pending_indices=None):
     fail = [(i, ch, err) for (i, ch, s, err) in results if not s]
     print(f"Строка {row_idx}: перс-отправки завершены. Успешно {ok}/{len(clients_with_channels)}. Неудачи: {fail}")
 
-    # DM summary if something failed
     if fail:
         tg_notify(f"❗️Строка {row_idx}: {ok}/{len(clients_with_channels)} успешно.\nПроблемы: {fail}")
 
-
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
+
 async def validate_sessions_before_start():
     """
     Проверяет, что общий StringSession авторизован. Короткие таймауты,
@@ -927,10 +826,9 @@ async def validate_sessions_before_start():
 async def main():
     """Главная функция: подключается к клиентам и запускает бесконечный цикл проверки."""
     if not clients:
-        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте TG_API_ID/TG_API_HASH и TG{n}_SESSION/TG{n}_CHANNEL.")
+        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте TG_API_ID/TG_API_HASH и TG_SESSION/TG{n}_CHANNEL.")
         return
 
-    # Предварительная проверка сессий: не даём Telethon спрашивать телефон
     await validate_sessions_before_start()
 
     print("Подключение Telegram клиентов...")
@@ -939,12 +837,12 @@ async def main():
         if isinstance(res, Exception):
             print(f"ПРЕДУПРЕЖДЕНИЕ: клиент #{idx} не запустился: {res}")
     print("Клиенты успешно подключены. Запуск основного цикла...")
-    tg_notify("🚀 telethon-poster запущен и следит за Google Sheets")
+    tg_notify("🚀 telethon-постер запущен и следит за Google Sheets")
 
     while True:
         try:
             alive = sum(1 for c in clients if c.is_connected())
-            # Proactive reconnect sweep to recover from "Server closed the connection" events
+            # Proactive reconnect sweep
             seen = set()
             for acc_idx, client in CLIENT_BY_INDEX.items():
                 key = id(client)
@@ -966,14 +864,18 @@ async def main():
                 if not str(record.get("Имя", "")).strip():
                     continue
 
-                active_idx = [acc["index"] for acc in accounts if acc.get("channel") and acc["index"] in SENT_FLAG_INDICES]
+                # ВАЖНО: берём ВСЕ настроенные каналы
+                active_idx = [acc["index"] for acc in accounts if acc.get("channel")]
                 if not active_idx:
                     continue
 
-                pending_idx = [
-                    i for i in active_idx
-                    if str(record.get(str(i), record.get(i, ""))).upper() != "TRUE"
-                ]
+                # Канал считается уже отправленным только если соответствующий столбец существует и там TRUE
+                pending_idx = []
+                for i in active_idx:
+                    cell_val = record.get(str(i), record.get(i, ""))
+                    if str(cell_val).upper() != "TRUE":
+                        pending_idx.append(i)
+
                 if not pending_idx:
                     continue
                 print(f"Строка {idx}: каналы к отправке -> {pending_idx}")
