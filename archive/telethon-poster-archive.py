@@ -911,7 +911,7 @@ async def send_post(record, row_idx, pending_indices=None):
                 if col_idx:
                     try:
                         worksheet.update_cell(row_idx, col_idx, "TRUE")
-                    except Exception as e_upд:
+                    except Exception as e_upd:
                         print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upд}")
                 SENT_RUNTIME.add(rt_key)
                 return acc_idx, channel_str, True, None
