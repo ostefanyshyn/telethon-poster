@@ -99,12 +99,25 @@ def _notify_media_issue(row_idx, reason):
 
 def _swap_media_extension(url: str):
     url_str = str(url or "")
-    lower = url_str.lower()
-    if lower.endswith(".jpg"):
-        return url_str[:-4] + ".mp4"
-    if lower.endswith(".mp4"):
-        return url_str[:-4] + ".jpg"
-    return None
+    # Match an extension right before end or a query/hash (e.g. .jpg, .PNG)
+    m = re.search(r'(\.[A-Za-z0-9]+)(?=$|[?#])', url_str)
+    all_exts = (
+        ".jpg", ".JPG",
+        ".jpeg", ".JPEG",
+        ".png", ".PNG",
+        ".webp", ".WEBP",
+        ".mp4", ".MP4",
+        ".mov", ".MOV",
+    )
+    if m:
+        prefix = url_str[:m.start(1)]
+        suffix = url_str[m.end(1):]
+        current_ext = url_str[m.start(1):m.end(1)]  # keep original case
+        alts = [prefix + ext + suffix for ext in all_exts if ext != current_ext]
+    else:
+        # No extension: propose base + every extension
+        alts = [url_str + ext for ext in all_exts]
+    return alts or None
 
 def _download_with_fallback(url: str, row_idx: int, timeout=(5, 60)):
     try:
@@ -112,16 +125,20 @@ def _download_with_fallback(url: str, row_idx: int, timeout=(5, 60)):
         resp.raise_for_status()
         return resp.content, url, resp.headers.get('Content-Type', '').lower()
     except Exception as first_e:
-        alt = _swap_media_extension(url)
-        if not alt:
+        alts = _swap_media_extension(url)
+        if not alts:
             raise first_e
-        try:
-            resp = requests.get(alt, timeout=timeout)
-            resp.raise_for_status()
-            tg_notify(f"ℹ️ Строка {row_idx}: {url} не загрузилась; использую {alt}.")
-            return resp.content, alt, resp.headers.get('Content-Type', '').lower()
-        except Exception:
-            raise first_e
+        last_err = first_e
+        for alt in alts:
+            try:
+                resp = requests.get(alt, timeout=timeout)
+                resp.raise_for_status()
+                tg_notify(f"ℹ️ Строка {row_idx}: {url} не загрузилась; использую {alt}.")
+                return resp.content, alt, resp.headers.get('Content-Type', '').lower()
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err
 
 _DEF_EXTS = (
     ".jpg", ".JPG",
@@ -138,28 +155,7 @@ def _has_known_ext(url: str) -> bool:
 
 def _download_with_ext_guess(url: str, row_idx: int, timeout=(5, 60)):
     u = str(url or "")
-    if _has_known_ext(u):
-        return _download_with_fallback(u, row_idx, timeout=timeout)
-
-    last_err = None
-    candidates = (
-        ".jpg", ".JPG",
-        ".jpeg", ".JPEG",
-        ".png", ".PNG",
-        ".webp", ".WEBP",
-        ".mp4", ".MP4",
-        ".mov", ".MOV",
-    )
-    for ext in candidates:
-        candidate = u + ext
-        try:
-            content, final_url, ctype = _download_with_fallback(candidate, row_idx, timeout=timeout)
-            tg_notify(f"ℹ️ Строка {row_idx}: к '{url}' добавил '{ext}' → скачал {final_url}.")
-            return content, final_url, ctype
-        except Exception as e:
-            last_err = e
-            continue
-    raise last_err or Exception("Не удалось скачать медиа ни с одним из расширений")
+    return _download_with_fallback(u, row_idx, timeout=timeout)
 
 def _global_excepthook(exc_type, exc, tb):
     logging.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
@@ -547,6 +543,18 @@ async def send_post(record, row_idx, pending_indices=None):
     nationality_raw = record.get("Национальность", "")
     nationality_flag = re.sub(r"\s+", "", str(nationality_raw or ""))
 
+    # Требуемое количество рабочих медиа (из столбца "Количество"): пусто -> 4
+    required_media_raw = record.get("Количество", "")
+    try:
+        required_media_count = int(str(required_media_raw).strip())
+        if required_media_count < 1:
+            required_media_count = 1
+    except Exception:
+        # Если значение пусто или некорректно — используем дефолт 4
+        required_media_count = 4
+    if str(required_media_raw).strip() == "":
+        required_media_count = 4
+
     # Обязательное требование: без WhatsApp не публикуем
     if not (whatsapp_link and str(whatsapp_link).strip()):
         _notify_skip(row_idx, "Ячейка WhatsApp пуста. Публикация пропущена.")
@@ -674,14 +682,15 @@ async def send_post(record, row_idx, pending_indices=None):
                         continue
                 media_data.append((file_data, file_name))
             except Exception as e:
-                if url_idx == 4:
-                    _notify_media_issue(row_idx, f"Не удалось загрузить 4-ю ссылку {url} — {e}. Продолжаю публикацию без неё.")
-                else:
-                    _notify_media_issue(row_idx, f"Не удалось загрузить медиа {url} — {e}. Пропускаю файл №{url_idx} и продолжаю.")
+                _notify_media_issue(row_idx, f"Не удалось загрузить медиа {url} — {e}. Пропускаю файл №{url_idx} и продолжаю.")
                 continue
 
     if not media_data:
         _notify_skip(row_idx, "Не удалось загрузить ни одно медиа. Публикация пропущена.")
+        return
+    # Требование по минимальному количеству рабочих медиа
+    if len(media_data) < required_media_count:
+        _notify_skip(row_idx, f"Загружено {len(media_data)} медиа, требуется минимум {required_media_count}. Публикация пропущена.")
         return
     if len(media_data) != len(media_urls):
         tg_notify(f"ℹ️ Строка {row_idx}: загрузил {len(media_data)}/{len(media_urls)} медиа, продолжаю с успешными.")
