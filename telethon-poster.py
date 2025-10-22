@@ -133,7 +133,6 @@ def _download_with_fallback(url: str, row_idx: int, timeout=(5, 60)):
             try:
                 resp = requests.get(alt, timeout=timeout)
                 resp.raise_for_status()
-                tg_notify(f"ℹ️ Строка {row_idx}: {url} не загрузилась; использую {alt}.")
                 return resp.content, alt, resp.headers.get('Content-Type', '').lower()
             except Exception as e:
                 last_err = e
