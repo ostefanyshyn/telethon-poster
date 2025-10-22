@@ -32,7 +32,7 @@ load_dotenv()
 # Mute noisy Telethon reconnect logs like "Server closed the connection" unless explicitly overridden
 LOG_LEVEL = os.environ.get("TELETHON_LOG_LEVEL", "ERROR").upper()
 try:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     logging.getLogger("telethon").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
     logging.getLogger("telethon.network").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
     logging.getLogger("telethon.network.mtprotosender").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
@@ -40,10 +40,9 @@ except Exception:
     pass
 
 # === Telegram DM notifications via Bot API ===================================
-# Configure env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, optional TG_NOTIFY_LEVEL (INFO|WARNING|ERROR|CRITICAL)
+# Configure env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-TG_NOTIFY_LEVEL = os.environ.get("TG_NOTIFY_LEVEL", "ERROR").upper()
 
 def tg_notify(text: str):
     """
@@ -69,7 +68,7 @@ def tg_notify(text: str):
         pass
 
 class TGBotLoggingHandler(logging.Handler):
-    """Send ERROR/CRITICAL logs (configurable) to Telegram DM."""
+    """Send ERROR/CRITICAL logs to Telegram DM."""
     def emit(self, record: logging.LogRecord):
         try:
             msg = self.format(record)
@@ -80,9 +79,9 @@ class TGBotLoggingHandler(logging.Handler):
         except Exception:
             pass
 
-_lvl = getattr(logging, TG_NOTIFY_LEVEL, logging.ERROR)
+_lvl = logging.ERROR
 _tg_handler = TGBotLoggingHandler(level=_lvl)
-_tg_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+_tg_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
 logging.getLogger().addHandler(_tg_handler)
 
 # Helper to log and DM-notify skipped publications
