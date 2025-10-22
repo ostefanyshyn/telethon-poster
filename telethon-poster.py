@@ -350,15 +350,10 @@ class CustomHtml:
 for _c in clients:
     _c.parse_mode = CustomHtml()
 
-# ID кастомных эмодзи
 emoji_ids = {
     1: 5467538555158943525,   # 💭 (left)
     2: 5467538555158943525,   # 💭 (right)
     3: 5217822164362739968,   # 👑
-    4: 5384225750213754731,   # ✅
-    5: 5386698955591549040,   # ✅
-    6: 5386434913887086602,   # ✅
-    7: 5386675715523505193,   # ✅
     8: 5325547803936572038,   # ✨ (left)
     9: 5325547803936572038,   # ✨ (right)
     10: 5409048419211682843,  # 💵 (left)
@@ -372,13 +367,21 @@ emoji_ids = {
 emoji_placeholders = {
     1: "💭",  2: "💭",
     3: "👑",
-    4: "✅",  5: "✅",  6: "✅",  7: "✅",
     8: "✨",  9: "✨",
     10: "💵", 11: "💵",
     12: "⚡️", 13: "⚡️",
     14: "📱",
     15: "ℹ️",
 }
+
+# Custom set of emojis for the "Фото" checks line
+FOTO_EMOJI_IDS = [
+    5370853949358218655,
+    5370674552869232639,
+    5372943137415111238,
+    5373338978780979795,
+    5372991528811635071,
+]
 
 # Типографика короны
 CROWN_OFFSET_ADJUST = int(os.environ.get("CROWN_OFFSET_ADJUST", "0"))
@@ -579,7 +582,7 @@ async def send_post(record, row_idx, pending_indices=None):
         line2 = f"{line2}{THIN}{nationality_flag}"
     blocks.append("\n".join([line1, line2]))
     # 3) Фото
-    foto_checks = "".join(f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>' for i in range(4, 8))
+    foto_checks = "".join(f'<a href="emoji/{eid}">✅</a>' for eid in FOTO_EMOJI_IDS)
     blocks.append(f'<b>Фото{THIN}{foto_checks}</b>')
     # 4) Услуги/Доп.услуги
     services_lines = []
