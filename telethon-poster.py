@@ -799,6 +799,17 @@ async def send_post(record, row_idx, pending_indices=None):
     if fail:
         tg_notify(f"❗️Строка {row_idx}: {ok}/{len(clients_with_channels)} успешно.\nПроблемы: {fail}")
 
+    # Если была хотя бы одна успешная отправка — отмечаем глобальный флаг "Отправлено"
+    if ok > 0:
+        for fname in ("Отправлено", "отправлено"):
+            col_idx = get_col_index(fname)
+            if col_idx:
+                try:
+                    worksheet.update_cell(row_idx, col_idx, "TRUE")
+                    break  # пометили любой из вариантов названия колонки
+                except Exception as e_upd:
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить глобальный флаг '{fname}' (строка {row_idx}): {e_upd}")
+
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
 
 async def validate_sessions_before_start():
@@ -869,6 +880,11 @@ async def main():
 
             for idx, record in enumerate(records, start=2):
                 if not str(record.get("Имя", "")).strip():
+                    continue
+
+                # Глобальный флаг "Отправлено": если TRUE — пропускаем запись
+                sent_flag = record.get("Отправлено", record.get("отправлено", ""))
+                if str(sent_flag).strip().upper() == "TRUE":
                     continue
 
                 # ВАЖНО: берём ВСЕ настроенные каналы
