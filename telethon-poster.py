@@ -563,10 +563,10 @@ async def send_post(record, row_idx, pending_indices=None):
 
     # --- сбор строк внутри блоков ---
     param_lines = []
-    if age and str(age).strip():    param_lines.append(f"Возраст - {age}")
-    if height and str(height).strip(): param_lines.append(f"Рост - {height}")
-    if weight and str(weight).strip(): param_lines.append(f"Вес - {weight}")
-    if bust and str(bust).strip():  param_lines.append(f"Грудь - {bust}")
+    if age and str(age).strip():    param_lines.append(f"Возраст: {age}")
+    if height and str(height).strip(): param_lines.append(f"Рост: {height}")
+    if weight and str(weight).strip(): param_lines.append(f"Вес: {weight}")
+    if bust and str(bust).strip():  param_lines.append(f"Грудь: {bust}")
 
     blocks = []
     # 1) Статус
@@ -612,9 +612,9 @@ async def send_post(record, row_idx, pending_indices=None):
         except Exception:
             return f"{val} AMD"
     price_lines = []
-    if express_price and str(express_price).strip(): price_lines.append(f"Express - {_fmt_price(express_price)}")
-    if incall_price and str(incall_price).strip():  price_lines.append(f"Incall - {_fmt_price(incall_price)}")
-    if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
+    if express_price and str(express_price).strip(): price_lines.append(f"Express: {_fmt_price(express_price)}")
+    if incall_price and str(incall_price).strip():  price_lines.append(f"Incall: {_fmt_price(incall_price)}")
+    if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall: {_fmt_price(outcall_price)}")
     if price_lines:
         price_header = (
             f'<a href="emoji/{emoji_ids[10]}">{emoji_placeholders[10]}</a>{THIN}'
