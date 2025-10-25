@@ -11,6 +11,7 @@ import gspread
 import sys
 import logging
 import traceback
+from typing import List, Tuple
 from telethon.network import connection as tl_connection
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -326,6 +327,7 @@ CLIENT_BY_INDEX = {i: client for i in ACC_BY_INDEX.keys()}
 
 # Runtime de-duplication guard: prevent repeating sends if Google Sheets flag update lags
 SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
+SENDING_MARK = "SENDING"
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР + ТИПОГРАФИКА ---
 
@@ -525,7 +527,7 @@ def crown_over_name_lines(name: str, crown_html: str):
 
 # --- 4. ФУНКЦИЯ ОТПРАВКИ ПОСТА ---
 
-async def send_post(record, row_idx, pending_indices=None):
+async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count, success_indices)
     """Собирает, форматирует и отправляет пост на основе строки из таблицы."""
     status = record.get("Статус", "")
     name = record.get("Имя", "")
@@ -559,7 +561,7 @@ async def send_post(record, row_idx, pending_indices=None):
     # Обязательное требование: без WhatsApp не публикуем
     if not (whatsapp_link and str(whatsapp_link).strip()):
         _notify_skip(row_idx, "Ячейка WhatsApp пуста. Публикация пропущена.")
-        return
+        return 0, []
 
     # --- сбор строк внутри блоков ---
     param_lines = []
@@ -659,10 +661,10 @@ async def send_post(record, row_idx, pending_indices=None):
             media_urls.append(url)
     if not media_urls:
         _notify_skip(row_idx, "Нет ни одной ссылки на медиа. Публикация пропущена.")
-        return
+        return 0, []
     if media_urls and len(set(media_urls)) != len(media_urls):
         _notify_skip(row_idx, "Обнаружены дубликаты ссылок на медиа. Публикация пропущена.")
-        return
+        return 0, []
 
     print(f"Найдено {len(media_urls)} URL-адресов для строки {row_idx}.")
     media_data = []
@@ -688,11 +690,12 @@ async def send_post(record, row_idx, pending_indices=None):
 
     if not media_data:
         _notify_skip(row_idx, "Не удалось загрузить ни одно медиа. Публикация пропущена.")
-        return
+        return 0, []
     # Требование по минимальному количеству рабочих медиа
     if len(media_data) < required_media_count:
         _notify_skip(row_idx, f"Загружено {len(media_data)} медиа, требуется минимум {required_media_count}. Публикация пропущена.")
-        return
+        return 0, []
+
     if len(media_data) != len(media_urls):
         tg_notify(f"ℹ️ Строка {row_idx}: загрузил {len(media_data)}/{len(media_urls)} медиа, продолжаю с успешными.")
 
@@ -750,7 +753,7 @@ async def send_post(record, row_idx, pending_indices=None):
                 try:
                     worksheet.update_cell(row_idx, col_idx, "TRUE")
                 except Exception as e_upd:
-                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upд}")
             SENT_RUNTIME.add(rt_key)
             return acc_idx, channel_str, True, None
 
@@ -758,37 +761,17 @@ async def send_post(record, row_idx, pending_indices=None):
             logging.error(f"TG{acc_idx} лимит Telegram: {e}", exc_info=True)
             return acc_idx, channel_str, False, f"rate: {e}"
         except Exception as e:
-            logging.error(f"TG{acc_idx} ошибка отправки: {e}. Пробуем повтор...", exc_info=True)
+            logging.error(f"TG{acc_idx} ошибка отправки: {e}. Повтор не выполняем, чтобы избежать дублей", exc_info=True)
             try:
                 await client.disconnect()
             except Exception:
                 pass
             try:
                 await client.connect()
-                if media_data:
-                    file_objs = []
-                    for data, fname in media_data:
-                        bio = io.BytesIO(data); bio.name = fname; file_objs.append(bio)
-                    await client.send_file(
-                        channel, file_objs, caption=message_html,
-                        supports_streaming=True, parse_mode=CustomHtml()
-                    )
-                else:
-                    await client.send_message(
-                        channel, message_html, parse_mode=CustomHtml()
-                    )
-                flag_name = str(acc_idx)
-                col_idx = get_col_index(flag_name)
-                if col_idx:
-                    try:
-                        worksheet.update_cell(row_idx, col_idx, "TRUE")
-                    except Exception as e_upd:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upд}")
-                SENT_RUNTIME.add(rt_key)
-                return acc_idx, channel_str, True, None
-            except Exception as e2:
-                logging.error(f"TG{acc_idx} повторная отправка не удалась: {e2}", exc_info=True)
-                return acc_idx, channel_str, False, f"retry: {e2}"
+            except Exception:
+                pass
+            # Сообщаем об ошибке без повторной отправки — повтор выполнит главный цикл, если потребуется
+            return acc_idx, channel_str, False, f"transient-no-retry: {e}"
 
     results = await asyncio.gather(
         *[_send_to_one(client, acc) for (client, acc) in clients_with_channels],
@@ -812,6 +795,9 @@ async def send_post(record, row_idx, pending_indices=None):
                     break  # пометили любой из вариантов названия колонки
                 except Exception as e_upd:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить глобальный флаг '{fname}' (строка {row_idx}): {e_upd}")
+
+    success_indices = [i for (i, _, s, _) in results if s]
+    return ok, success_indices
 
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
 
@@ -899,7 +885,8 @@ async def main():
                 pending_idx = []
                 for i in active_idx:
                     cell_val = record.get(str(i), record.get(i, ""))
-                    if str(cell_val).upper() != "TRUE":
+                    val_upper = str(cell_val).strip().upper()
+                    if val_upper not in ("TRUE", SENDING_MARK):
                         pending_idx.append(i)
 
                 if not pending_idx:
@@ -916,7 +903,27 @@ async def main():
 
                     if sched_time <= now:
                         print(f"Найдена запись для отправки в строке {idx}.")
-                        await send_post(record, idx, pending_indices=pending_idx)
+
+                        # Устанавливаем "SENDING" в канал-столбцах перед отправкой (мягкая блокировка от дублей)
+                        for i in pending_idx:
+                            col_idx = get_col_index(str(i))
+                            if col_idx:
+                                try:
+                                    worksheet.update_cell(idx, col_idx, SENDING_MARK)
+                                except Exception as e_upd:
+                                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось выставить SENDING для столбца {i} (строка {idx}): {e_upd}")
+
+                        ok, success_idx = await send_post(record, idx, pending_indices=pending_idx)
+
+                        # Сбрасываем SENDING для неуспешных каналов, чтобы их можно было повторно обработать
+                        failed_idx = [i for i in pending_idx if i not in success_idx]
+                        for i in failed_idx:
+                            col_idx = get_col_index(str(i))
+                            if col_idx:
+                                try:
+                                    worksheet.update_cell(idx, col_idx, "")
+                                except Exception as e_upd:
+                                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось снять SENDING для столбца {i} (строка {idx}): {e_upd}")
 
                 except ValueError:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: Неверный формат времени в строке {idx}: '{time_str}'. Ожидается 'ДД.ММ.ГГГГ ЧЧ:ММ:СС'.")
