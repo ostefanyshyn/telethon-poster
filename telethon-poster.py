@@ -525,6 +525,46 @@ def crown_over_name_lines(name: str, crown_html: str):
     line2 = f"<b><i>{name}</i></b>"
     return line1, line2
 
+
+# --- ДЕДУП ПО КАНАЛУ: сравнение текста и окно по времени ---
+
+def _norm_text_for_dedupe(s: str) -> str:
+    """Нормализуем текст для сравнения: убираем теги/невидимые символы и схлопываем пробелы."""
+    t = _strip_tags(s)
+    # унифицируем пробелы: NBSP, THIN и убираем WORD JOINER
+    t = t.replace('\u202F', ' ').replace('\u2009', ' ').replace('\u2060', '')
+    t = re.sub(r'\s+', ' ', t)
+    return t.strip().lower()
+
+async def _already_posted_recent(client, channel, message_html: str, window_sec: int = None) -> bool:
+    """Возвращает True, если в канале уже есть такой же по тексту пост за последние N секунд."""
+    try:
+        win = int(os.environ.get("DEDUP_WINDOW_SEC", "180")) if window_sec is None else int(window_sec)
+    except Exception:
+        win = 180
+    try:
+        recent = await client.get_messages(channel, limit=6)
+    except Exception:
+        return False
+    target = _norm_text_for_dedupe(message_html)
+    from datetime import datetime as _dt
+    now_utc = _dt.utcnow()
+    for m in recent:
+        msg_text = getattr(m, 'message', '') or ''
+        if _norm_text_for_dedupe(msg_text) == target:
+            md = getattr(m, 'date', None)
+            if md:
+                try:
+                    # Telethon отдаёт дату в UTC без tzinfo
+                    delta = abs((now_utc - md).total_seconds())
+                    if delta <= win:
+                        return True
+                except Exception:
+                    return True
+            else:
+                return True
+    return False
+
 # --- 4. ФУНКЦИЯ ОТПРАВКИ ПОСТА ---
 
 async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count, success_indices)
@@ -733,6 +773,21 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
             except (ValueError, TypeError):
                 channel = channel_str
 
+            # Preflight: если такой же пост уже есть в канале за недавнее время — пропускаем
+            try:
+                if await _already_posted_recent(client, channel, message_html):
+                    flag_name = str(acc_idx)
+                    col_idx = get_col_index(flag_name)
+                    if col_idx:
+                        try:
+                            worksheet.update_cell(row_idx, col_idx, "TRUE")
+                        except Exception as e_upd:
+                            print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
+                    SENT_RUNTIME.add(rt_key)
+                    return acc_idx, channel_str, True, "pre-exist-skip"
+            except Exception as e_chk:
+                print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось выполнить проверку на дубли в TG{acc_idx}: {e_chk}")
+
             if media_data:
                 file_objs = []
                 for data, fname in media_data:
@@ -753,7 +808,7 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
                 try:
                     worksheet.update_cell(row_idx, col_idx, "TRUE")
                 except Exception as e_upd:
-                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upд}")
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
             SENT_RUNTIME.add(rt_key)
             return acc_idx, channel_str, True, None
 
