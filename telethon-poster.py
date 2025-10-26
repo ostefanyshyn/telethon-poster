@@ -363,7 +363,8 @@ emoji_ids = {
     12: 5456140674028019486,  # ⚡️ (left)
     13: 5456140674028019486,  # ⚡️ (right)
     14: 5334998226636390258,  # 📱
-    15: 5334544901428229844,  # ℹ️ (info)
+    15: 5334544901428229844,  # ℹ️ (info),
+    16: 5330237710655306682,  # 📱 (Telegram custom)
 }
 
 emoji_placeholders = {
@@ -374,6 +375,7 @@ emoji_placeholders = {
     12: "⚡️", 13: "⚡️",
     14: "📱",
     15: "ℹ️",
+    16: "📱",
 }
 
 # Custom set of emojis for the "Фото" checks line
@@ -680,7 +682,7 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
     ]
     if telegram_link and str(telegram_link).strip():
         cta_and_contacts.append(
-            f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a>{THIN}'
+            f'<a href="emoji/{emoji_ids[16]}">{emoji_placeholders[16]}</a>{THIN}'
             f'<a href="{telegram_link}"><b>Связь в Telegram</b></a>'
         )
     if whatsapp_link and str(whatsapp_link).strip():
