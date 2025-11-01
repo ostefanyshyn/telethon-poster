@@ -739,7 +739,7 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
         return 0, []
 
     if len(media_data) != len(media_urls):
-        tg_notify(f"ℹ️ Строка {row_idx}: загрузил {len(media_data)}/{len(media_urls)} медиа, продолжаю с успешными.")
+        logging.info(f"Строка {row_idx}: загрузил {len(media_data)}/{len(media_urls)} медиа, продолжаю с успешными.")
 
     # --- отправка ---
     if pending_indices is None:
