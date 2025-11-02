@@ -505,6 +505,22 @@ def _plain_len(s: str) -> int:
     txt = re.sub(r"<[^>]+>", "", str(s or "")).strip()
     return len(txt)
 
+# --- Helper: normalize multiline text (Google Sheets cell) ---
+def _normalize_multiline_text(s: str) -> str:
+    """Normalize line breaks coming from Google Sheets cells to avoid extra blank rows.
+    - Unify CRLF/CR to LF
+    - Trim trailing spaces per line
+    - Drop leading/trailing blank lines
+    """
+    t = str(s or "")
+    # Unify Windows/Mac line endings to Unix LF
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    # Trim trailing whitespace on each line to prevent accidental empty "visual" lines
+    t = "\n".join(line.rstrip() for line in t.split("\n"))
+    # Remove leading/trailing blank lines
+    t = t.strip("\n")
+    return t
+
 def crown_over_name_lines(name: str, crown_html: str):
     name_plain = _strip_tags(name)
     name_px = _text_width_px(name_plain)
@@ -573,8 +589,8 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
     """Собирает, форматирует и отправляет пост на основе строки из таблицы."""
     status = record.get("Статус", "")
     name = record.get("Имя", "")
-    services = record.get("Услуги", "")
-    extra_services = record.get("Доп. услуги", "")
+    services = _normalize_multiline_text(record.get("Услуги", ""))
+    extra_services = _normalize_multiline_text(record.get("Доп. услуги", ""))
     age = record.get("Возраст", "")
     height = record.get("Рост", "")
     weight = record.get("Вес", "")
@@ -634,7 +650,7 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
         services_lines += ["Услуги:", f'<b><i>{services}</i></b>']
     if extra_services and str(extra_services).strip():
         if services_lines:
-            services_lines.append("")
+            services_lines.append("")  # один пустой ряд как визуальный разделитель
         services_lines += ["Доп. услуги:", f'<b><i>{extra_services}</i></b>']
     if services_lines:
         inner = "\n".join(services_lines)
