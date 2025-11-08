@@ -616,9 +616,11 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
     if str(required_media_raw).strip() == "":
         required_media_count = 4
 
-    # Обязательное требование: без WhatsApp не публикуем
-    if not (whatsapp_link and str(whatsapp_link).strip()):
-        _notify_skip(row_idx, "Ячейка WhatsApp пуста. Публикация пропущена.")
+    # Обязательное требование: нужен хотя бы один контакт (Telegram или WhatsApp)
+    has_tg = bool(telegram_link and str(telegram_link).strip())
+    has_wa = bool(whatsapp_link and str(whatsapp_link).strip())
+    if not (has_tg or has_wa):
+        _notify_skip(row_idx, "Нет контакта Telegram или WhatsApp. Публикация пропущена.")
         return 0, []
 
     # --- сбор строк внутри блоков ---
