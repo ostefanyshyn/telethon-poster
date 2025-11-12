@@ -208,6 +208,28 @@ if gp_type and gp_host and gp_port_str:
         gp_rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
         GLOBAL_PROXY = (gp_type, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
 
+# Helper: получить прокси-кортеж для конкретного индекса TG{idx}
+def _proxy_tuple_for_index(idx: int):
+    """
+    Возвращает прокси-кортеж для аккаунта TG{idx}.
+    Разрешает переопределения TG{idx}_PROXY_TYPE/HOST/PORT/RDNS/USER/PASS,
+    иначе использует глобальные TG_PROXY_*.
+    """
+    t = os.environ.get(f"TG{idx}_PROXY_TYPE") or gp_type
+    h = os.environ.get(f"TG{idx}_PROXY_HOST") or gp_host
+    p_str = os.environ.get(f"TG{idx}_PROXY_PORT") or gp_port_str
+    rdns_str = os.environ.get(f"TG{idx}_PROXY_RDNS") or gp_rdns_str
+    u = os.environ.get(f"TG{idx}_PROXY_USER") or gp_user
+    pw = os.environ.get(f"TG{idx}_PROXY_PASS") or gp_pass
+    if not (t and h and p_str):
+        return GLOBAL_PROXY
+    try:
+        p = int(p_str)
+    except Exception:
+        return GLOBAL_PROXY
+    rdns = str(rdns_str).lower() in ("1", "true", "yes", "y", "on")
+    return (t, h, p, rdns, u, pw)
+
 # Требование наличия прокси по переключателю (по умолчанию — включено)
 REQUIRE_PROXY = str(os.environ.get("REQUIRE_PROXY", "true")).lower() in ("1", "true", "yes", "on")
 
@@ -289,14 +311,14 @@ def get_col_index(name: str, warn: bool = True):
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
 
-# Настройка одного клиента Telegram (общий для всех каналов)
-clients = []
-common_proxy = GLOBAL_PROXY
-client = TelegramClient(
+# Настройка клиентов Telegram:
+# - service_client (только для служебных операций — определение next_post_link и т.п.)
+# - CLIENT_BY_INDEX: отдельный клиент для каждого TG{n}_SESSION → TG{n}_CHANNEL
+service_client = TelegramClient(
     StringSession(TG_SESSION),
     TG_API_ID,
     TG_API_HASH,
-    proxy=common_proxy,
+    proxy=GLOBAL_PROXY,
     connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
     request_retries=TELETHON_REQUEST_RETRIES,
     connection_retries=TELETHON_CONNECTION_RETRIES,
@@ -304,11 +326,34 @@ client = TelegramClient(
     timeout=TELETHON_TIMEOUT,
     flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
 )
-clients.append(client)
 
-# Удобные словари доступа по индексу (все индексы используют один и тот же клиент)
+# Удобные словари доступа по индексу (все индексы имеют свой клиент)
 ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
-CLIENT_BY_INDEX = {i: client for i in ACC_BY_INDEX.keys()}
+CLIENT_BY_INDEX = {}
+for i in sorted(ACC_BY_INDEX.keys()):
+    sess = os.environ.get(f"TG{i}_SESSION")
+    if not sess:
+        print(f"ОШИБКА: Для TG{i}_CHANNEL требуется TG{i}_SESSION (StringSession).")
+        exit(1)
+    proxy_tuple = _proxy_tuple_for_index(i)
+    if REQUIRE_PROXY and not proxy_tuple:
+        print(f"ОШИБКА: Для TG{i} не настроен прокси. Задайте TG_PROXY_* или TG{i}_PROXY_*.") 
+        exit(1)
+    CLIENT_BY_INDEX[i] = TelegramClient(
+        StringSession(sess),
+        TG_API_ID,
+        TG_API_HASH,
+        proxy=proxy_tuple,
+        connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
+        request_retries=TELETHON_REQUEST_RETRIES,
+        connection_retries=TELETHON_CONNECTION_RETRIES,
+        retry_delay=TELETHON_RETRY_DELAY,
+        timeout=TELETHON_TIMEOUT,
+        flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
+    )
+
+# Список всех клиентов (сервисный + по индексам)
+ALL_CLIENTS = [service_client] + list(CLIENT_BY_INDEX.values())
 
 # Runtime de-duplication guard: prevent repeating sends if Google Sheets flag update lags
 SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
@@ -332,8 +377,8 @@ class CustomHtml:
                 entities[i] = types.MessageEntityTextUrl(e.offset, e.length, url=f"emoji/{e.document_id}")
         return tl_html.unparse(text, entities)
 
-# Установка парсера по умолчанию
-for _c in clients:
+# Установка парсера по умолчанию для всех клиентов
+for _c in ALL_CLIENTS:
     _c.parse_mode = CustomHtml()
 
 emoji_ids = {
@@ -563,7 +608,7 @@ async def _get_next_post_link():
     Сначала пытаемся получить entity по username (POST_LINK_CHANNEL_SLUG), затем по ID.
     Если ни один способ не доступен — вернём None (что приведёт к пропуску публикации).
     """
-    base_client = clients[0]
+    base_client = service_client
     try:
         if not base_client.is_connected():
             await base_client.connect()
@@ -961,43 +1006,44 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
 
 async def validate_sessions_before_start():
     """
-    Проверяет, что общий StringSession авторизован. Короткие таймауты,
-    чтобы не висеть на недоступной сети/прокси.
+    Проверяет, что сервисная сессия и все TG{n}_SESSION авторизованы.
+    Короткие таймауты, чтобы не висеть на недоступной сети/прокси.
     """
-    print("Проверка сессии Telegram... (один аккаунт)")
-    client = clients[0]
-    try:
-        if not client.is_connected():
-            await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
-        authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
-        if not authed:
-            logging.error("Сессия не авторизована. Проверь TG_SESSION.")
-            exit(1)
-        print("TG: OK")
-    except asyncio.TimeoutError:
-        logging.error(f"Timeout при проверке сессии ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)")
-        exit(1)
-    except Exception as e:
-        logging.error(f"Ошибка проверки сессии: {e}")
-        exit(1)
-    finally:
+    print("Проверка сессий Telegram...")
+    to_check = [("service", service_client)] + [(f"TG{idx}", cl) for idx, cl in sorted(CLIENT_BY_INDEX.items())]
+    for label, client in to_check:
         try:
-            await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
-        except Exception:
-            pass
+            if not client.is_connected():
+                await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
+            authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
+            if not authed:
+                logging.error(f"Сессия {label} не авторизована.")
+                exit(1)
+            print(f"{label}: OK")
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout при проверке сессии {label} ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)")
+            exit(1)
+        except Exception as e:
+            logging.error(f"Ошибка проверки сессии {label}: {e}")
+            exit(1)
+        finally:
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
+            except Exception:
+                pass
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
 async def main():
     """Главная функция: подключается к клиентам и запускает бесконечный цикл проверки."""
-    if not clients:
-        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте TG_API_ID/TG_API_HASH и TG_SESSION/TG{n}_CHANNEL.")
+    if not CLIENT_BY_INDEX:
+        print("ОШИБКА: Не настроен ни один TG{n}_SESSION/TG{n}_CHANNEL.")
         return
 
     await validate_sessions_before_start()
 
     print("Подключение Telegram клиентов...")
-    results = await asyncio.gather(*(c.start() for c in clients), return_exceptions=True)
+    results = await asyncio.gather(*(c.start() for c in ALL_CLIENTS), return_exceptions=True)
     for idx, res in enumerate(results, start=1):
         if isinstance(res, Exception):
             print(f"ПРЕДУПРЕЖДЕНИЕ: клиент #{idx} не запустился: {res}")
@@ -1006,21 +1052,21 @@ async def main():
 
     while True:
         try:
-            alive = sum(1 for c in clients if c.is_connected())
-            # Proactive reconnect sweep
+            alive = sum(1 for c in ALL_CLIENTS if c.is_connected())
+            # Proactive reconnect sweep (service + per-index)
             seen = set()
-            for acc_idx, client in CLIENT_BY_INDEX.items():
-                key = id(client)
+            for c in ALL_CLIENTS:
+                key = id(c)
                 if key in seen:
                     continue
                 seen.add(key)
-                if not client.is_connected():
+                if not c.is_connected():
                     try:
-                        await client.connect()
+                        await c.connect()
                         print("TG переподключен.")
                     except Exception as e:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось переподключить общий клиент: {e}")
-            print(f"Активных клиентов: {alive}/{len(clients)}")
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось переподключить клиента: {e}")
+            print(f"Активных клиентов: {alive}/{len(ALL_CLIENTS)}")
             print(f"Проверка таблицы... {datetime.now(tz).strftime('%H:%M:%S')}")
             records = worksheet.get_all_records()
             now = datetime.now(tz)
@@ -1035,7 +1081,7 @@ async def main():
                     continue
 
                 # Берём все настроенные каналы (табличные флаги не используем)
-                active_idx = [acc["index"] for acc in accounts if acc.get("channel")] 
+                active_idx = [acc["index"] for acc in accounts if acc.get("channel") and acc["index"] in CLIENT_BY_INDEX]
                 if not active_idx:
                     continue
 
