@@ -1059,6 +1059,7 @@ async def validate_sessions_before_start():
     При неудаче клиенты исключаются из работы, но процесс не падает.
     Поведение "жёстко падать" можно вернуть, выставив STRICT_VALIDATE=1.
     """
+    global clients, CLIENT_BY_INDEX
     strict_validate = str(os.environ.get("STRICT_VALIDATE", "0")).lower() in ("1", "true", "yes", "on")
     print("Проверка сессий Telegram...")
     bad_ids = set()
@@ -1118,15 +1119,14 @@ async def validate_sessions_before_start():
 
     if bad_ids:
         # Отфильтруем нерабочие клиенты из глобальных структур
+        affected_indices = sorted({i for cid, idx_list in client_to_indices.items() if cid in bad_ids for i in idx_list})
         good_clients = [c for c in clients if id(c) not in bad_ids]
         removed = len(clients) - len(good_clients)
         # Обновим глобальные переменные
-        global clients, CLIENT_BY_INDEX
         clients = good_clients
         CLIENT_BY_INDEX = {i: c for i, c in CLIENT_BY_INDEX.items() if id(c) not in bad_ids}
-        affected = sorted({i for i_list in client_to_indices.values() for i in i_list if id(CLIENT_BY_INDEX.get(i, object())) in bad_ids})
         print(f"Отключено клиентов: {removed}. Оставлено: {len(clients)}.")
-        logging.warning(f"Отключены индексы (прокси/таймаут): {sorted(set(sum((client_to_indices.get(bid, []) for bid in bad_ids), [])))}")
+        logging.warning(f"Отключены индексы (прокси/таймаут): {affected_indices}")
         tg_notify(f"🧹 Отключено нерабочих клиентов: {removed}. Активных: {len(clients)}")
     else:
         print("Все клиенты успешно проверены.")
