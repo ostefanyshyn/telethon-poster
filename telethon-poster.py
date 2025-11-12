@@ -11,6 +11,7 @@ import gspread
 import sys
 import logging
 import traceback
+import urllib.parse
 from typing import List, Tuple
 from telethon.network import connection as tl_connection
 from telethon import TelegramClient
@@ -233,6 +234,10 @@ if not CHANNELS_BY_INDEX:
 # Совместимость: список с индексами и каналами для логики флагов в таблице
 accounts = [{"index": i, "channel": ch} for i, ch in sorted(CHANNELS_BY_INDEX.items())]
 
+# Канал для ссылки на будущий пост (используется для префилла DM-ссылок)
+POST_LINK_CHANNEL_ID = int(os.environ.get("POST_LINK_CHANNEL_ID", "-1002940070930"))
+POST_LINK_CHANNEL_SLUG = os.environ.get("POST_LINK_CHANNEL_SLUG", "axjikner_handipum_erevan")
+
 # Проверка прокси — по переключателю REQUIRE_PROXY (по умолчанию обязателен)
 if REQUIRE_PROXY and not GLOBAL_PROXY:
     logging.error(
@@ -295,9 +300,9 @@ except Exception as e:
 if not SENT_FLAG_INDICES:
     SENT_FLAG_INDICES = [acc["index"] for acc in accounts]
 
-def get_col_index(name: str):
+def get_col_index(name: str, warn: bool = True):
     idx = HEADER_TO_COL.get(name)
-    if not idx:
+    if not idx and warn:
         print(f"ПРЕДУПРЕЖДЕНИЕ: не найден столбец '{name}' в заголовке таблицы.")
     return idx
 
@@ -521,6 +526,104 @@ def _normalize_multiline_text(s: str) -> str:
     t = t.strip("\n")
     return t
 
+# --- Helpers: TG/WA contact normalization + next-post link -----------------
+def _tg_username_from_contact(val: str):
+    s = str(val or "").strip()
+    if not s:
+        return None
+    # Strip t.me/ and leading @, drop query params and trailing slashes
+    s = re.sub(r"^(?:https?://)?t\.me/", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^@+", "", s)
+    s = s.split("?")[0].strip().strip("/")
+    return s or None
+
+def _wa_number_from_contact(val: str):
+    """Extract a WhatsApp phone number suitable for wa.me links.
+    Rules:
+    - Prefer explicit wa.me/<digits> path.
+    - Else, support api.whatsapp.com/send?phone=<digits> or whatsapp://send?phone=...
+    - Else, find the first E.164-like token in free text (allowing spaces, dashes, parentheses),
+      strip separators and validate length (7..15). If longer, clip to 15 to avoid concatenation artifacts.
+    - Return None if nothing plausible is found.
+    """
+    s = str(val or "")
+    if not s.strip():
+        return None
+
+    # 1) wa.me/<digits>
+    m = re.search(r"(?:https?://)?wa\.me/\+?([0-9]{7,17})\b", s, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    # 2) ...?phone=<digits>
+    m = re.search(r"(?:[?&]|^)phone=([0-9\-\s()]+)", s, flags=re.IGNORECASE)
+    if m:
+        digits = re.sub(r"\D", "", m.group(1))
+        if 7 <= len(digits) <= 15:
+            return digits
+        if len(digits) > 15:
+            return digits[:15]
+
+    # 3) General free-text: pick the first E.164-like token (allow common separators)
+    m = re.search(r"(?<!\d)(\+?[1-9][0-9\-()\s]{6,20})(?!\d)", s)
+    if m:
+        digits = re.sub(r"\D", "", m.group(1))
+        if 7 <= len(digits) <= 15:
+            return digits
+        if len(digits) > 15:
+            return digits[:15]
+
+    # 4) Fallback: digits-only if reasonable length
+    digits = re.sub(r"\D", "", s)
+    if 7 <= len(digits) <= 15:
+        return digits
+    return None
+
+async def _get_next_post_link():
+    """Вернуть ссылку t.me/<slug-or-username>/<next_id> на СЛЕДУЮЩЕЕ сообщение.
+    Сначала пытаемся получить entity по username (POST_LINK_CHANNEL_SLUG), затем по ID.
+    Если ни один способ не доступен — вернём None (что приведёт к пропуску публикации).
+    """
+    base_client = clients[0]
+    try:
+        if not base_client.is_connected():
+            await base_client.connect()
+    except Exception:
+        logging.warning("Не удалось подключиться к Telegram клиенту для вычисления next_post_link")
+        return None
+
+    entity = None
+    # 1) Пытаемся по username/slug (надёжнее для публичных каналов)
+    if POST_LINK_CHANNEL_SLUG:
+        try:
+            entity = await base_client.get_entity(POST_LINK_CHANNEL_SLUG)
+        except Exception as e:
+            logging.warning(f"Не удалось получить entity по username '{POST_LINK_CHANNEL_SLUG}': {e}")
+
+    # 2) Фолбэк: пробуем по numeric ID (требует присутствия в диалогах/кеше)
+    if entity is None:
+        try:
+            entity = await base_client.get_entity(POST_LINK_CHANNEL_ID)
+        except Exception as e:
+            logging.warning(f"Не удалось получить entity по ID {POST_LINK_CHANNEL_ID}: {e}")
+            return None
+
+    try:
+        last = await base_client.get_messages(entity, limit=1)
+        last_id = last[0].id if last else 0
+        next_id = last_id + 1
+        uname = getattr(entity, "username", None) or POST_LINK_CHANNEL_SLUG
+        if uname:
+            return f"https://t.me/{uname}/{next_id}"
+        internal_id = getattr(entity, "id", None)
+        if internal_id:
+            return f"https://t.me/c/{internal_id}/{next_id}"
+    except Exception as e:
+        logging.warning(f"Не удалось получить номер последнего поста: {e}")
+        return None
+
+    return None
+
 def crown_over_name_lines(name: str, crown_html: str):
     name_plain = _strip_tags(name)
     name_px = _text_width_px(name_plain)
@@ -603,6 +706,35 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
     note_text = record.get("Примечание", "")
     nationality_raw = record.get("Национальность", "")
     nationality_flag = re.sub(r"\s+", "", str(nationality_raw or ""))
+
+    # --- Сбор ссылки на будущий пост и формирование DM-ссылок ---
+    name_plain_for_dm = _strip_tags(name)
+    next_post_link = await _get_next_post_link()
+    if not next_post_link:
+        _notify_skip(row_idx, "Не удалось получить номер последнего поста в канале (entity недоступен). Публикация пропущена.")
+        return 0, []
+
+    prefill_text = (
+        f"Привет, {name_plain_for_dm}!\u2009💙\n"
+        f"Увидел твою анкету и хочу организовать встречу.\n"
+        f"Ссылка на пост: {next_post_link}"
+    )
+
+    tg_username = _tg_username_from_contact(telegram_link)
+    wa_number = _wa_number_from_contact(whatsapp_link)
+
+    telegram_dm_link = telegram_link
+    whatsapp_dm_link = whatsapp_link
+    try:
+        if tg_username:
+            telegram_dm_link = f"https://t.me/{tg_username}?text=" + urllib.parse.quote(prefill_text, safe="")
+    except Exception:
+        pass
+    try:
+        if wa_number:
+            whatsapp_dm_link = f"https://wa.me/{wa_number}?text=" + urllib.parse.quote(prefill_text, safe="")
+    except Exception:
+        pass
 
     # Требуемое количество рабочих медиа (из столбца "Количество"): пусто -> 4
     required_media_raw = record.get("Количество", "")
@@ -701,12 +833,12 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
     if telegram_link and str(telegram_link).strip():
         cta_and_contacts.append(
             f'<a href="emoji/{emoji_ids[16]}">{emoji_placeholders[16]}</a>{THIN}'
-            f'<a href="{telegram_link}"><b>Связь в Telegram</b></a>'
+            f'<a href="{telegram_dm_link}"><b>Связь в Telegram</b></a>'
         )
     if whatsapp_link and str(whatsapp_link).strip():
         cta_and_contacts.append(
             f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a>{THIN}'
-            f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a>'
+            f'<a href="{whatsapp_dm_link}"><b>Связь в WhatsApp</b></a>'
         )
     blocks.append("\n".join(cta_and_contacts))
 
@@ -797,7 +929,7 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
             try:
                 if await _already_posted_recent(client, channel, message_html):
                     flag_name = str(acc_idx)
-                    col_idx = get_col_index(flag_name)
+                    col_idx = get_col_index(flag_name, warn=False)
                     if col_idx:
                         try:
                             worksheet.update_cell(row_idx, col_idx, "TRUE")
@@ -823,7 +955,7 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
 
             # отметить флаг, если столбец существует
             flag_name = str(acc_idx)
-            col_idx = get_col_index(flag_name)
+            col_idx = get_col_index(flag_name, warn=False)
             if col_idx:
                 try:
                     worksheet.update_cell(row_idx, col_idx, "TRUE")
@@ -981,7 +1113,7 @@ async def main():
 
                         # Устанавливаем "SENDING" в канал-столбцах перед отправкой (мягкая блокировка от дублей)
                         for i in pending_idx:
-                            col_idx = get_col_index(str(i))
+                            col_idx = get_col_index(str(i), warn=False)
                             if col_idx:
                                 try:
                                     worksheet.update_cell(idx, col_idx, SENDING_MARK)
@@ -993,7 +1125,7 @@ async def main():
                         # Сбрасываем SENDING для неуспешных каналов, чтобы их можно было повторно обработать
                         failed_idx = [i for i in pending_idx if i not in success_idx]
                         for i in failed_idx:
-                            col_idx = get_col_index(str(i))
+                            col_idx = get_col_index(str(i), warn=False)
                             if col_idx:
                                 try:
                                     worksheet.update_cell(idx, col_idx, "")
