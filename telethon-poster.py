@@ -6,8 +6,6 @@ import re
 from datetime import datetime
 import pytz
 import requests
-import socket
-import socks  # PySocks constants for Telethon proxy tuples
 import io
 import gspread
 import sys
@@ -201,25 +199,6 @@ gp_rdns_str = os.environ.get("TG_PROXY_RDNS", os.environ.get("PROXY_RDNS", "true
 gp_user = os.environ.get("TG_PROXY_USER") or os.environ.get("PROXY_USER")
 gp_pass = os.environ.get("TG_PROXY_PASS") or os.environ.get("PROXY_PASS")
 
-def _map_proxy_type(t):
-    """
-    Map env value like 'socks5'/'SOCKS5'/5 to PySocks constant.
-    Returns None if unknown.
-    """
-    try:
-        if isinstance(t, int):
-            return t
-        s = str(t or "").strip().lower()
-        if s in ("socks5", "socks", "5"):
-            return socks.SOCKS5
-        if s in ("socks4", "4"):
-            return socks.SOCKS4
-        if s in ("http", "https"):
-            return socks.HTTP
-    except Exception:
-        pass
-    return None
-
 if gp_type and gp_host and gp_port_str:
     try:
         gp_port = int(gp_port_str)
@@ -227,9 +206,7 @@ if gp_type and gp_host and gp_port_str:
         gp_port = None
     if gp_port:
         gp_rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
-        _ptype = _map_proxy_type(gp_type)
-        if _ptype is not None:
-            GLOBAL_PROXY = (_ptype, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
+        GLOBAL_PROXY = (gp_type, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
 
 # Требование наличия прокси по переключателю (по умолчанию — включено)
 REQUIRE_PROXY = str(os.environ.get("REQUIRE_PROXY", "true")).lower() in ("1", "true", "yes", "on")
@@ -312,96 +289,26 @@ def get_col_index(name: str, warn: bool = True):
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
 
-#
-# Настройка клиентов Telegram (общие параметры; разный proxy_user/SESSION по индексу)
-
-ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
-CLIENT_BY_INDEX = {}
+# Настройка одного клиента Telegram (общий для всех каналов)
 clients = []
-
-# --- Service (global) client: TG_SESSION without proxy by default ---
-# If you want proxy for the global service client, set GLOBAL_SESSION_USE_PROXY=1
-GLOBAL_SESSION_USE_PROXY = str(os.environ.get("GLOBAL_SESSION_USE_PROXY", "false")).lower() in ("1", "true", "yes", "on")
-_service_proxy = GLOBAL_PROXY if GLOBAL_SESSION_USE_PROXY else None
-SERVICE_CLIENT = TelegramClient(
+common_proxy = GLOBAL_PROXY
+client = TelegramClient(
     StringSession(TG_SESSION),
     TG_API_ID,
     TG_API_HASH,
-    proxy=_service_proxy,
-    connection=tl_connection.ConnectionTcpAbridged,  # avoid tcpfull
+    proxy=common_proxy,
+    connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
     request_retries=TELETHON_REQUEST_RETRIES,
     connection_retries=TELETHON_CONNECTION_RETRIES,
     retry_delay=TELETHON_RETRY_DELAY,
     timeout=TELETHON_TIMEOUT,
     flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
 )
-# put the service client first so clients[0] is the "global" one used e.g. for _get_next_post_link()
-clients.append(SERVICE_CLIENT)
+clients.append(client)
 
-
-def _proxy_tuple_for_index(i: int):
-    """Собирает tuple прокси для индекса i.
-    Все параметры общие, кроме пользовательского имени: TG{i}_PROXY_USER (если задан).
-    Возвращает None, если прокси не сконфигурирован глобально.
-    """
-    if not (gp_type and gp_host and gp_port_str):
-        return None
-    try:
-        p = int(gp_port_str)
-    except Exception:
-        return None
-    rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
-    per_user = os.environ.get(f"TG{i}_PROXY_USER", gp_user)
-    _ptype = _map_proxy_type(gp_type)
-    return (_ptype, gp_host, p, rdns, per_user, gp_pass) if _ptype is not None else None
-
-
-# --- SOCKS preflight for proxies ---
-def _proxy_preflight(i: int, timeout: int = 10):
-    """
-    Quick SOCKS preflight for index i to a Telegram DC IP.
-    Returns (ok: bool, info: str).
-    """
-    pt = _proxy_tuple_for_index(i)
-    if not pt:
-        return True, "no-proxy"
-    try:
-        ptype, host, port, rdns, user, pwd = pt
-    except Exception:
-        return False, "bad-proxy-tuple"
-    try:
-        s = socks.socksocket()
-        s.set_proxy(ptype, host, port, username=user, password=pwd, rdns=rdns)
-        s.settimeout(timeout)
-        # Telegram DC IPv4 reachable on 443 (generic DC endpoint)
-        s.connect(("149.154.167.51", 443))
-        s.close()
-        return True, f"ok to {host}:{port} (user={bool(user)})"
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
-
-
-# Кэшируем клиенты по ключу (SESSION, proxy_user)
-_clients_cache = {}
-for i in sorted(ACC_BY_INDEX.keys()):
-    session_str = os.environ.get(f"TG{i}_SESSION", TG_SESSION)
-    proxy_tuple = _proxy_tuple_for_index(i)
-    cache_key = (session_str, proxy_tuple[4] if proxy_tuple else None)  # (session, proxy_user)
-    if cache_key not in _clients_cache:
-        _clients_cache[cache_key] = TelegramClient(
-            StringSession(session_str),
-            TG_API_ID,
-            TG_API_HASH,
-            proxy=proxy_tuple,
-            connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
-            request_retries=TELETHON_REQUEST_RETRIES,
-            connection_retries=TELETHON_CONNECTION_RETRIES,
-            retry_delay=TELETHON_RETRY_DELAY,
-            timeout=TELETHON_TIMEOUT,
-            flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
-        )
-        clients.append(_clients_cache[cache_key])
-    CLIENT_BY_INDEX[i] = _clients_cache[cache_key]
+# Удобные словари доступа по индексу (все индексы используют один и тот же клиент)
+ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
+CLIENT_BY_INDEX = {i: client for i in ACC_BY_INDEX.keys()}
 
 # Runtime de-duplication guard: prevent repeating sends if Google Sheets flag update lags
 SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
@@ -1054,82 +961,30 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
 
 async def validate_sessions_before_start():
     """
-    Проверяет, что все уникальные Telegram клиенты авторизованы.
-    Делает быстрый SOCKS-префлайт для клиентов с прокси.
-    При неудаче клиенты исключаются из работы, но процесс не падает.
-    Поведение "жёстко падать" можно вернуть, выставив STRICT_VALIDATE=1.
+    Проверяет, что общий StringSession авторизован. Короткие таймауты,
+    чтобы не висеть на недоступной сети/прокси.
     """
-    global clients, CLIENT_BY_INDEX
-    strict_validate = str(os.environ.get("STRICT_VALIDATE", "0")).lower() in ("1", "true", "yes", "on")
-    print("Проверка сессий Telegram...")
-    bad_ids = set()
-    # Построим обратное соответствие client -> индекс(ы)
-    client_to_indices = {}
-    for i, cl in CLIENT_BY_INDEX.items():
-        client_to_indices.setdefault(id(cl), []).append(i)
-
-    for ordinal, client in enumerate(clients, start=1):
-        # Определим индексы, которые используют этот объект клиента (может быть несколько при одинаковой связке (SESSION, proxy_user))
-        indices = client_to_indices.get(id(client), [])
-        # Для сервисного клиента (обычно ordinal==1) префлайт не нужен
-        if indices:
-            # Возьмём любой индекс для префлайта (прокси у них одинаковый внутри одного client)
-            probe_index = indices[0]
-            ok_pf, info_pf = _proxy_preflight(probe_index, timeout=min(10, VALIDATION_CONNECT_TIMEOUT))
-            if not ok_pf:
-                msg = f"Префлайт прокси для TG{probe_index} провален: {info_pf}. Клиент будет отключён до исправления прокси."
-                logging.error(msg)
-                tg_notify(f"❌ {msg}")
-                bad_ids.add(id(client))
-                continue
-            else:
-                print(f"Префлайт TG{probe_index}: {info_pf}")
-
+    print("Проверка сессии Telegram... (один аккаунт)")
+    client = clients[0]
+    try:
+        if not client.is_connected():
+            await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
+        authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
+        if not authed:
+            logging.error("Сессия не авторизована. Проверь TG_SESSION.")
+            exit(1)
+        print("TG: OK")
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout при проверке сессии ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)")
+        exit(1)
+    except Exception as e:
+        logging.error(f"Ошибка проверки сессии: {e}")
+        exit(1)
+    finally:
         try:
-            if not client.is_connected():
-                await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
-            authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
-            if not authed:
-                msg = f"Сессия клиента #{ordinal} не авторизована (indices={indices}). Проверь TG_SESSION/TG{{n}}_SESSION."
-                logging.error(msg)
-                tg_notify(f"❌ {msg}")
-                if strict_validate:
-                    raise RuntimeError("unauthorized")
-                bad_ids.add(id(client))
-        except asyncio.TimeoutError:
-            msg = (f"Timeout при проверке клиента #{ordinal} ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s). "
-                   f"indices={indices or 'service'}")
-            logging.error(msg)
-            tg_notify(f"⏳ {msg}")
-            if strict_validate:
-                raise
-            bad_ids.add(id(client))
-        except Exception as e:
-            msg = f"Ошибка проверки клиента #{ordinal}: {e} (indices={indices or 'service'})"
-            logging.error(msg, exc_info=True)
-            tg_notify(f"⚠️ {msg}")
-            if strict_validate:
-                raise
-            bad_ids.add(id(client))
-        finally:
-            try:
-                await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
-            except Exception:
-                pass
-
-    if bad_ids:
-        # Отфильтруем нерабочие клиенты из глобальных структур
-        affected_indices = sorted({i for cid, idx_list in client_to_indices.items() if cid in bad_ids for i in idx_list})
-        good_clients = [c for c in clients if id(c) not in bad_ids]
-        removed = len(clients) - len(good_clients)
-        # Обновим глобальные переменные
-        clients = good_clients
-        CLIENT_BY_INDEX = {i: c for i, c in CLIENT_BY_INDEX.items() if id(c) not in bad_ids}
-        print(f"Отключено клиентов: {removed}. Оставлено: {len(clients)}.")
-        logging.warning(f"Отключены индексы (прокси/таймаут): {affected_indices}")
-        tg_notify(f"🧹 Отключено нерабочих клиентов: {removed}. Активных: {len(clients)}")
-    else:
-        print("Все клиенты успешно проверены.")
+            await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
+        except Exception:
+            pass
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
