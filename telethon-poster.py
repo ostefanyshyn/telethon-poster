@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 import pytz
 import requests
+import socks  # PySocks constants for Telethon proxy tuples
 import io
 import gspread
 import sys
@@ -199,6 +200,25 @@ gp_rdns_str = os.environ.get("TG_PROXY_RDNS", os.environ.get("PROXY_RDNS", "true
 gp_user = os.environ.get("TG_PROXY_USER") or os.environ.get("PROXY_USER")
 gp_pass = os.environ.get("TG_PROXY_PASS") or os.environ.get("PROXY_PASS")
 
+def _map_proxy_type(t):
+    """
+    Map env value like 'socks5'/'SOCKS5'/5 to PySocks constant.
+    Returns None if unknown.
+    """
+    try:
+        if isinstance(t, int):
+            return t
+        s = str(t or "").strip().lower()
+        if s in ("socks5", "socks", "5"):
+            return socks.SOCKS5
+        if s in ("socks4", "4"):
+            return socks.SOCKS4
+        if s in ("http", "https"):
+            return socks.HTTP
+    except Exception:
+        pass
+    return None
+
 if gp_type and gp_host and gp_port_str:
     try:
         gp_port = int(gp_port_str)
@@ -206,7 +226,9 @@ if gp_type and gp_host and gp_port_str:
         gp_port = None
     if gp_port:
         gp_rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
-        GLOBAL_PROXY = (gp_type, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
+        _ptype = _map_proxy_type(gp_type)
+        if _ptype is not None:
+            GLOBAL_PROXY = (_ptype, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
 
 # Требование наличия прокси по переключателю (по умолчанию — включено)
 REQUIRE_PROXY = str(os.environ.get("REQUIRE_PROXY", "true")).lower() in ("1", "true", "yes", "on")
@@ -329,7 +351,8 @@ def _proxy_tuple_for_index(i: int):
         return None
     rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
     per_user = os.environ.get(f"TG{i}_PROXY_USER", gp_user)
-    return (gp_type, gp_host, p, rdns, per_user, gp_pass)
+    _ptype = _map_proxy_type(gp_type)
+    return (_ptype, gp_host, p, rdns, per_user, gp_pass) if _ptype is not None else None
 
 
 # Кэшируем клиенты по ключу (SESSION, proxy_user)
