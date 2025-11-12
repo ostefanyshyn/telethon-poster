@@ -291,9 +291,29 @@ tz = pytz.timezone("Asia/Yerevan")
 
 #
 # Настройка клиентов Telegram (общие параметры; разный proxy_user/SESSION по индексу)
+
 ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
 CLIENT_BY_INDEX = {}
 clients = []
+
+# --- Service (global) client: TG_SESSION without proxy by default ---
+# If you want proxy for the global service client, set GLOBAL_SESSION_USE_PROXY=1
+GLOBAL_SESSION_USE_PROXY = str(os.environ.get("GLOBAL_SESSION_USE_PROXY", "false")).lower() in ("1", "true", "yes", "on")
+_service_proxy = GLOBAL_PROXY if GLOBAL_SESSION_USE_PROXY else None
+SERVICE_CLIENT = TelegramClient(
+    StringSession(TG_SESSION),
+    TG_API_ID,
+    TG_API_HASH,
+    proxy=_service_proxy,
+    connection=tl_connection.ConnectionTcpAbridged,  # avoid tcpfull
+    request_retries=TELETHON_REQUEST_RETRIES,
+    connection_retries=TELETHON_CONNECTION_RETRIES,
+    retry_delay=TELETHON_RETRY_DELAY,
+    timeout=TELETHON_TIMEOUT,
+    flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
+)
+# put the service client first so clients[0] is the "global" one used e.g. for _get_next_post_link()
+clients.append(SERVICE_CLIENT)
 
 
 def _proxy_tuple_for_index(i: int):
