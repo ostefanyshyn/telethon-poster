@@ -190,7 +190,7 @@ if not TG_SESSION:
     print("ОШИБКА: Укажите TG_SESSION (StringSession одного аккаунта) в переменных окружения.")
     exit(1)
 
-# Глобальный (общий) прокси (опционально): TG_PROXY_* или TG16_PROXY_* как фолбэк
+# Глобальный (общий) прокси (опционально): TG_PROXY_*
 GLOBAL_PROXY = None
 gp_type = os.environ.get("TG_PROXY_TYPE") or os.environ.get("PROXY_TYPE")
 gp_host = os.environ.get("TG_PROXY_HOST") or os.environ.get("PROXY_HOST")
@@ -198,15 +198,6 @@ gp_port_str = os.environ.get("TG_PROXY_PORT") or os.environ.get("PROXY_PORT")
 gp_rdns_str = os.environ.get("TG_PROXY_RDNS", os.environ.get("PROXY_RDNS", "true"))
 gp_user = os.environ.get("TG_PROXY_USER") or os.environ.get("PROXY_USER")
 gp_pass = os.environ.get("TG_PROXY_PASS") or os.environ.get("PROXY_PASS")
-
-# Фолбэк к TG16_PROXY_*
-if not (gp_type and gp_host and gp_port_str):
-    gp_type = os.environ.get("TG16_PROXY_TYPE", gp_type)
-    gp_host = os.environ.get("TG16_PROXY_HOST", gp_host)
-    gp_port_str = os.environ.get("TG16_PROXY_PORT", gp_port_str)
-    gp_rdns_str = os.environ.get("TG16_PROXY_RDNS", gp_rdns_str)
-    gp_user = os.environ.get("TG16_PROXY_USER", gp_user)
-    gp_pass = os.environ.get("TG16_PROXY_PASS", gp_pass)
 
 if gp_type and gp_host and gp_port_str:
     try:
@@ -220,12 +211,15 @@ if gp_type and gp_host and gp_port_str:
 # Требование наличия прокси по переключателю (по умолчанию — включено)
 REQUIRE_PROXY = str(os.environ.get("REQUIRE_PROXY", "true")).lower() in ("1", "true", "yes", "on")
 
-# Собираем до 20 каналов TG{n}_CHANNEL
+# Собираем каналы TG{n}_CHANNEL без жёсткого лимита
 CHANNELS_BY_INDEX = {}
-for n in range(1, 21):
-    ch = os.environ.get(f"TG{n}_CHANNEL")
-    if ch:
-        CHANNELS_BY_INDEX[n] = ch
+for key, val in os.environ.items():
+    m = re.match(r"^TG(\d+)_CHANNEL$", key)
+    if m and val:
+        idx = int(m.group(1))
+        CHANNELS_BY_INDEX[idx] = val
+# Сортировка по индексу для стабильного порядка
+CHANNELS_BY_INDEX = dict(sorted(CHANNELS_BY_INDEX.items()))
 
 if not CHANNELS_BY_INDEX:
     print("ОШИБКА: Не задан ни один TG{n}_CHANNEL (например, TG1_CHANNEL).")
@@ -285,20 +279,6 @@ except Exception as e:
     print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось прочитать заголовки листа: {e}")
     HEADER_TO_COL = {}
 
-# Авто-обнаружение флаговых столбцов (числовые имена колонок '1', '2', ...)
-try:
-    SENT_FLAG_INDICES = sorted(
-        int(name) for name in HEADER_TO_COL.keys() if str(name).strip().isdigit()
-    )
-    if not SENT_FLAG_INDICES:
-        print("ПРЕДУПРЕЖДЕНИЕ: Не найдено числовых флаговых столбцов в заголовке.")
-except Exception as e:
-    print(f"ПРЕДУПРЕЖДЕНИЕ: ошибка при определении флаговых столбцов: {e}")
-    SENT_FLAG_INDICES = []
-
-# Fallback: если нет числовых флагов в таблице, шлём во ВСЕ каналы
-if not SENT_FLAG_INDICES:
-    SENT_FLAG_INDICES = [acc["index"] for acc in accounts]
 
 def get_col_index(name: str, warn: bool = True):
     idx = HEADER_TO_COL.get(name)
@@ -309,30 +289,53 @@ def get_col_index(name: str, warn: bool = True):
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
 
-# Настройка одного клиента Telegram (общий для всех каналов)
-clients = []
-common_proxy = GLOBAL_PROXY
-client = TelegramClient(
-    StringSession(TG_SESSION),
-    TG_API_ID,
-    TG_API_HASH,
-    proxy=common_proxy,
-    connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
-    request_retries=TELETHON_REQUEST_RETRIES,
-    connection_retries=TELETHON_CONNECTION_RETRIES,
-    retry_delay=TELETHON_RETRY_DELAY,
-    timeout=TELETHON_TIMEOUT,
-    flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
-)
-clients.append(client)
-
-# Удобные словари доступа по индексу (все индексы используют один и тот же клиент)
+#
+# Настройка клиентов Telegram (общие параметры; разный proxy_user/SESSION по индексу)
 ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
-CLIENT_BY_INDEX = {i: client for i in ACC_BY_INDEX.keys()}
+CLIENT_BY_INDEX = {}
+clients = []
+
+
+def _proxy_tuple_for_index(i: int):
+    """Собирает tuple прокси для индекса i.
+    Все параметры общие, кроме пользовательского имени: TG{i}_PROXY_USER (если задан).
+    Возвращает None, если прокси не сконфигурирован глобально.
+    """
+    if not (gp_type and gp_host and gp_port_str):
+        return None
+    try:
+        p = int(gp_port_str)
+    except Exception:
+        return None
+    rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
+    per_user = os.environ.get(f"TG{i}_PROXY_USER", gp_user)
+    return (gp_type, gp_host, p, rdns, per_user, gp_pass)
+
+
+# Кэшируем клиенты по ключу (SESSION, proxy_user)
+_clients_cache = {}
+for i in sorted(ACC_BY_INDEX.keys()):
+    session_str = os.environ.get(f"TG{i}_SESSION", TG_SESSION)
+    proxy_tuple = _proxy_tuple_for_index(i)
+    cache_key = (session_str, proxy_tuple[4] if proxy_tuple else None)  # (session, proxy_user)
+    if cache_key not in _clients_cache:
+        _clients_cache[cache_key] = TelegramClient(
+            StringSession(session_str),
+            TG_API_ID,
+            TG_API_HASH,
+            proxy=proxy_tuple,
+            connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
+            request_retries=TELETHON_REQUEST_RETRIES,
+            connection_retries=TELETHON_CONNECTION_RETRIES,
+            retry_delay=TELETHON_RETRY_DELAY,
+            timeout=TELETHON_TIMEOUT,
+            flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
+        )
+        clients.append(_clients_cache[cache_key])
+    CLIENT_BY_INDEX[i] = _clients_cache[cache_key]
 
 # Runtime de-duplication guard: prevent repeating sends if Google Sheets flag update lags
 SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
-SENDING_MARK = "SENDING"
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР + ТИПОГРАФИКА ---
 
@@ -893,11 +896,7 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
 
     # --- отправка ---
     if pending_indices is None:
-        # Без числовых столбцов: отправляем во все каналы, кроме тех, где столбец есть и там TRUE
-        target_indexes = [
-            i for i, acc in ACC_BY_INDEX.items()
-            if acc.get("channel") and str(record.get(str(i), record.get(i, ""))).upper() != "TRUE"
-        ]
+        target_indexes = [i for i, acc in ACC_BY_INDEX.items() if acc.get("channel")]
     else:
         target_indexes = [i for i in pending_indices if i in ACC_BY_INDEX and ACC_BY_INDEX[i].get("channel")]
 
@@ -928,13 +927,6 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
             # Preflight: если такой же пост уже есть в канале за недавнее время — пропускаем
             try:
                 if await _already_posted_recent(client, channel, message_html):
-                    flag_name = str(acc_idx)
-                    col_idx = get_col_index(flag_name, warn=False)
-                    if col_idx:
-                        try:
-                            worksheet.update_cell(row_idx, col_idx, "TRUE")
-                        except Exception as e_upd:
-                            print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
                     SENT_RUNTIME.add(rt_key)
                     return acc_idx, channel_str, True, "pre-exist-skip"
             except Exception as e_chk:
@@ -953,14 +945,6 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
                     channel, message_html, parse_mode=CustomHtml()
                 )
 
-            # отметить флаг, если столбец существует
-            flag_name = str(acc_idx)
-            col_idx = get_col_index(flag_name, warn=False)
-            if col_idx:
-                try:
-                    worksheet.update_cell(row_idx, col_idx, "TRUE")
-                except Exception as e_upd:
-                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
             SENT_RUNTIME.add(rt_key)
             return acc_idx, channel_str, True, None
 
@@ -992,48 +976,39 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
     if fail:
         tg_notify(f"❗️Строка {row_idx}: {ok}/{len(clients_with_channels)} успешно.\nПроблемы: {fail}")
 
-    # Если была хотя бы одна успешная отправка — отмечаем глобальный флаг "Отправлено"
-    if ok > 0:
-        for fname in ("Отправлено", "отправлено"):
-            col_idx = get_col_index(fname)
-            if col_idx:
-                try:
-                    worksheet.update_cell(row_idx, col_idx, "TRUE")
-                    break  # пометили любой из вариантов названия колонки
-                except Exception as e_upd:
-                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить глобальный флаг '{fname}' (строка {row_idx}): {e_upd}")
 
     success_indices = [i for (i, _, s, _) in results if s]
     return ok, success_indices
+
 
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
 
 async def validate_sessions_before_start():
     """
-    Проверяет, что общий StringSession авторизован. Короткие таймауты,
+    Проверяет, что все уникальные Telegram клиенты авторизованы. Короткие таймауты,
     чтобы не висеть на недоступной сети/прокси.
     """
-    print("Проверка сессии Telegram... (один аккаунт)")
-    client = clients[0]
-    try:
-        if not client.is_connected():
-            await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
-        authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
-        if not authed:
-            logging.error("Сессия не авторизована. Проверь TG_SESSION.")
-            exit(1)
-        print("TG: OK")
-    except asyncio.TimeoutError:
-        logging.error(f"Timeout при проверке сессии ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)")
-        exit(1)
-    except Exception as e:
-        logging.error(f"Ошибка проверки сессии: {e}")
-        exit(1)
-    finally:
+    print("Проверка сессий Telegram...")
+    for idx, client in enumerate(clients, start=1):
         try:
-            await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
-        except Exception:
-            pass
+            if not client.is_connected():
+                await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
+            authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
+            if not authed:
+                logging.error(f"Сессия #{idx} не авторизована. Проверь TG_SESSION/TG{{n}}_SESSION.")
+                exit(1)
+            print(f"TG#{idx}: OK")
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout при проверке сессии #{idx} ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)")
+            exit(1)
+        except Exception as e:
+            logging.error(f"Ошибка проверки сессии #{idx}: {e}")
+            exit(1)
+        finally:
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
+            except Exception:
+                pass
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
@@ -1083,22 +1058,10 @@ async def main():
                 if str(sent_flag).strip().upper() == "TRUE":
                     continue
 
-                # ВАЖНО: берём ВСЕ настроенные каналы
-                active_idx = [acc["index"] for acc in accounts if acc.get("channel")]
+                # Берём все настроенные каналы (табличные флаги не используем)
+                active_idx = [acc["index"] for acc in accounts if acc.get("channel")] 
                 if not active_idx:
                     continue
-
-                # Канал считается уже отправленным только если соответствующий столбец существует и там TRUE
-                pending_idx = []
-                for i in active_idx:
-                    cell_val = record.get(str(i), record.get(i, ""))
-                    val_upper = str(cell_val).strip().upper()
-                    if val_upper not in ("TRUE", SENDING_MARK):
-                        pending_idx.append(i)
-
-                if not pending_idx:
-                    continue
-                print(f"Строка {idx}: каналы к отправке -> {pending_idx}")
 
                 time_str = record.get("Время")
                 if not time_str:
@@ -1109,29 +1072,19 @@ async def main():
                     sched_time = tz.localize(sched_time)
 
                     if sched_time <= now:
-                        print(f"Найдена запись для отправки в строке {idx}.")
+                        print(f"Найдена запись для отправки в строке {idx}. Каналы: {active_idx}")
+                        ok, success_idx = await send_post(record, idx, pending_indices=active_idx)
 
-                        # Устанавливаем "SENDING" в канал-столбцах перед отправкой (мягкая блокировка от дублей)
-                        for i in pending_idx:
-                            col_idx = get_col_index(str(i), warn=False)
-                            if col_idx:
-                                try:
-                                    worksheet.update_cell(idx, col_idx, SENDING_MARK)
-                                except Exception as e_upd:
-                                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось выставить SENDING для столбца {i} (строка {idx}): {e_upd}")
-
-                        ok, success_idx = await send_post(record, idx, pending_indices=pending_idx)
-
-                        # Сбрасываем SENDING для неуспешных каналов, чтобы их можно было повторно обработать
-                        failed_idx = [i for i in pending_idx if i not in success_idx]
-                        for i in failed_idx:
-                            col_idx = get_col_index(str(i), warn=False)
-                            if col_idx:
-                                try:
-                                    worksheet.update_cell(idx, col_idx, "")
-                                except Exception as e_upd:
-                                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось снять SENDING для столбца {i} (строка {idx}): {e_upd}")
-
+                        # Если все каналы успешно отработали — ставим глобальный флаг "Отправлено"
+                        if ok == len(active_idx):
+                            for fname in ("Отправлено", "отправлено"):
+                                col_idx = get_col_index(fname)
+                                if col_idx:
+                                    try:
+                                        worksheet.update_cell(idx, col_idx, "TRUE")
+                                        break
+                                    except Exception as e_upd:
+                                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить глобальный флаг '{fname}' (строка {idx}): {e_upd}")
                 except ValueError:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: Неверный формат времени в строке {idx}: '{time_str}'. Ожидается 'ДД.ММ.ГГГГ ЧЧ:ММ:СС'.")
                 except Exception as e:

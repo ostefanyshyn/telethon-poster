@@ -11,6 +11,8 @@ import gspread
 import sys
 import logging
 import traceback
+import urllib.parse
+from typing import List, Tuple
 from telethon.network import connection as tl_connection
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -26,14 +28,13 @@ try:
 except Exception:
     _PIL_AVAILABLE = False
 
-
 # Загрузка переменных из .env файла
 load_dotenv()
 
 # Mute noisy Telethon reconnect logs like "Server closed the connection" unless explicitly overridden
 LOG_LEVEL = os.environ.get("TELETHON_LOG_LEVEL", "ERROR").upper()
 try:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     logging.getLogger("telethon").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
     logging.getLogger("telethon.network").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
     logging.getLogger("telethon.network.mtprotosender").setLevel(getattr(logging, LOG_LEVEL, logging.ERROR))
@@ -41,10 +42,9 @@ except Exception:
     pass
 
 # === Telegram DM notifications via Bot API ===================================
-# Configure env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, optional TG_NOTIFY_LEVEL (INFO|WARNING|ERROR|CRITICAL)
+# Configure env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-TG_NOTIFY_LEVEL = os.environ.get("TG_NOTIFY_LEVEL", "ERROR").upper()
 
 def tg_notify(text: str):
     """
@@ -70,7 +70,7 @@ def tg_notify(text: str):
         pass
 
 class TGBotLoggingHandler(logging.Handler):
-    """Send ERROR/CRITICAL logs (configurable) to Telegram DM."""
+    """Send ERROR/CRITICAL logs to Telegram DM."""
     def emit(self, record: logging.LogRecord):
         try:
             msg = self.format(record)
@@ -81,10 +81,9 @@ class TGBotLoggingHandler(logging.Handler):
         except Exception:
             pass
 
-_lvl = getattr(logging, TG_NOTIFY_LEVEL, logging.ERROR)
+_lvl = logging.ERROR
 _tg_handler = TGBotLoggingHandler(level=_lvl)
-_tg_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-
+_tg_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
 logging.getLogger().addHandler(_tg_handler)
 
 # Helper to log and DM-notify skipped publications
@@ -97,19 +96,29 @@ def _notify_media_issue(row_idx, reason):
     logging.warning(f"Строка {row_idx}: {reason}")
     tg_notify(f"ℹ️ Строка {row_idx}: {reason}")
 
-# Attempt download, and if it fails try toggling extension (.jpg <-> .mp4)
-# Returns (bytes, final_url, content_type) or raises the original exception
-# Sends a TG info note when fallback succeeds
+# --- MEDIA DOWNLOAD (с подбором расширений) ----------------------------------
 
 def _swap_media_extension(url: str):
     url_str = str(url or "")
-    lower = url_str.lower()
-    if lower.endswith(".jpg"):
-        return url_str[:-4] + ".mp4"
-    if lower.endswith(".mp4"):
-        return url_str[:-4] + ".jpg"
-    return None
-
+    # Match an extension right before end or a query/hash (e.g. .jpg, .PNG)
+    m = re.search(r'(\.[A-Za-z0-9]+)(?=$|[?#])', url_str)
+    all_exts = (
+        ".jpg", ".JPG",
+        ".jpeg", ".JPEG",
+        ".png", ".PNG",
+        ".webp", ".WEBP",
+        ".mp4", ".MP4",
+        ".mov", ".MOV",
+    )
+    if m:
+        prefix = url_str[:m.start(1)]
+        suffix = url_str[m.end(1):]
+        current_ext = url_str[m.start(1):m.end(1)]  # keep original case
+        alts = [prefix + ext + suffix for ext in all_exts if ext != current_ext]
+    else:
+        # No extension: propose base + every extension
+        alts = [url_str + ext for ext in all_exts]
+    return alts or None
 
 def _download_with_fallback(url: str, row_idx: int, timeout=(5, 60)):
     try:
@@ -117,19 +126,20 @@ def _download_with_fallback(url: str, row_idx: int, timeout=(5, 60)):
         resp.raise_for_status()
         return resp.content, url, resp.headers.get('Content-Type', '').lower()
     except Exception as first_e:
-        alt = _swap_media_extension(url)
-        if not alt:
+        alts = _swap_media_extension(url)
+        if not alts:
             raise first_e
-        try:
-            resp = requests.get(alt, timeout=timeout)
-            resp.raise_for_status()
-            tg_notify(f"ℹ️ Строка {row_idx}: {url} не загрузилась; использую {alt}.")
-            return resp.content, alt, resp.headers.get('Content-Type', '').lower()
-        except Exception:
-            # Re-raise the original error for clearer context upstream
-            raise first_e
+        last_err = first_e
+        for alt in alts:
+            try:
+                resp = requests.get(alt, timeout=timeout)
+                resp.raise_for_status()
+                return resp.content, alt, resp.headers.get('Content-Type', '').lower()
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err
 
- # Helper: check if URL already has a known media extension we handle
 _DEF_EXTS = (
     ".jpg", ".JPG",
     ".jpeg", ".JPEG",
@@ -143,40 +153,12 @@ def _has_known_ext(url: str) -> bool:
     u = str(url or "").lower()
     return any(u.endswith(ext) for ext in _DEF_EXTS)
 
-# Try to download a URL; if it has no extension, try adding .jpg then .mp4
-# Returns (bytes, final_url, content_type)
 def _download_with_ext_guess(url: str, row_idx: int, timeout=(5, 60)):
     u = str(url or "")
-    if _has_known_ext(u):
-        # Will also try toggled extension internally on failure
-        return _download_with_fallback(u, row_idx, timeout=timeout)
-
-    last_err = None
-    candidates = (
-        ".jpg", ".JPG",
-        ".jpeg", ".JPEG",
-        ".png", ".PNG",
-        ".webp", ".WEBP",
-        ".mp4", ".MP4",
-        ".mov", ".MOV",
-    )
-    for ext in candidates:
-        candidate = u + ext
-        try:
-            content, final_url, ctype = _download_with_fallback(candidate, row_idx, timeout=timeout)
-            tg_notify(f"ℹ️ Строка {row_idx}: к '{url}' добавил '{ext}' → скачал {final_url}.")
-            return content, final_url, ctype
-        except Exception as e:
-            last_err = e
-            continue
-    # None of the extensions worked — raise the last error for context
-    raise last_err or Exception("Не удалось скачать медиа ни с одним из расширений")
-
-# also ship unhandled exceptions
+    return _download_with_fallback(u, row_idx, timeout=timeout)
 
 def _global_excepthook(exc_type, exc, tb):
     logging.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
-
 sys.excepthook = _global_excepthook
 
 # Предупреждение о версии Python (Telethon может работать нестабильно на Python 3.13)
@@ -190,13 +172,9 @@ if sys.version_info >= (3, 13):
 GSHEET_ID = os.environ.get("GSHEET_ID")
 GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDS_JSON")
 
-# Telegram аккаунты: общий TG_API_ID/TG_API_HASH и пер-аккаунтные TG{n}_SESSION, TG{n}_CHANNEL, прокси
-accounts = []
-
-# Общие Telegram API креды (единые для всех аккаунтов)
+# Общие Telegram API креды
 TG_API_ID_STR = os.environ.get("TG_API_ID")
 TG_API_HASH = os.environ.get("TG_API_HASH")
-
 if not TG_API_ID_STR or not TG_API_HASH:
     print("ОШИБКА: Укажите общие TG_API_ID и TG_API_HASH в переменных окружения.")
     exit(1)
@@ -206,9 +184,14 @@ except Exception:
     print("ОШИБКА: TG_API_ID должен быть числом.")
     exit(1)
 
+# Один общий аккаунт для всех каналов
+TG_SESSION = os.environ.get("TG_SESSION") or os.environ.get("TG1_SESSION")
+if not TG_SESSION:
+    print("ОШИБКА: Укажите TG_SESSION (StringSession одного аккаунта) в переменных окружения.")
+    exit(1)
+
 # Глобальный (общий) прокси (опционально): TG_PROXY_* или TG16_PROXY_* как фолбэк
 GLOBAL_PROXY = None
-# 1) Предпочтительно TG_PROXY_* (или PROXY_*)
 gp_type = os.environ.get("TG_PROXY_TYPE") or os.environ.get("PROXY_TYPE")
 gp_host = os.environ.get("TG_PROXY_HOST") or os.environ.get("PROXY_HOST")
 gp_port_str = os.environ.get("TG_PROXY_PORT") or os.environ.get("PROXY_PORT")
@@ -216,7 +199,7 @@ gp_rdns_str = os.environ.get("TG_PROXY_RDNS", os.environ.get("PROXY_RDNS", "true
 gp_user = os.environ.get("TG_PROXY_USER") or os.environ.get("PROXY_USER")
 gp_pass = os.environ.get("TG_PROXY_PASS") or os.environ.get("PROXY_PASS")
 
-# 2) Если TG_PROXY_* не заданы, используем TG16_PROXY_* (по просьбе пользователя)
+# Фолбэк к TG16_PROXY_*
 if not (gp_type and gp_host and gp_port_str):
     gp_type = os.environ.get("TG16_PROXY_TYPE", gp_type)
     gp_host = os.environ.get("TG16_PROXY_HOST", gp_host)
@@ -234,84 +217,40 @@ if gp_type and gp_host and gp_port_str:
         gp_rdns = str(gp_rdns_str).lower() in ("1", "true", "yes", "y", "on")
         GLOBAL_PROXY = (gp_type, gp_host, gp_port, gp_rdns, gp_user, gp_pass)
 
-for n in range(1, 24):
-    session = os.environ.get(f"TG{n}_SESSION")
-    channel = os.environ.get(f"TG{n}_CHANNEL")
+# Требование наличия прокси по переключателю (по умолчанию — включено)
+REQUIRE_PROXY = str(os.environ.get("REQUIRE_PROXY", "true")).lower() in ("1", "true", "yes", "on")
 
-    # Параметры прокси для этого аккаунта (опционально)
-    p_type = os.environ.get(f"TG{n}_PROXY_TYPE")      # например: 'socks5' или 'http'
-    p_host = os.environ.get(f"TG{n}_PROXY_HOST")
-    p_port_str = os.environ.get(f"TG{n}_PROXY_PORT")
-    p_rdns_raw = os.environ.get(f"TG{n}_PROXY_RDNS")  # None если не задано
-    p_user = os.environ.get(f"TG{n}_PROXY_USER")
-    p_pass = os.environ.get(f"TG{n}_PROXY_PASS")
+# Собираем до 20 каналов TG{n}_CHANNEL
+CHANNELS_BY_INDEX = {}
+for n in range(1, 21):
+    ch = os.environ.get(f"TG{n}_CHANNEL")
+    if ch:
+        CHANNELS_BY_INDEX[n] = ch
 
-    # Слияние с глобальным прокси: любые недостающие поля берём из GLOBAL_PROXY
-    gp_type = GLOBAL_PROXY[0] if GLOBAL_PROXY else None
-    gp_host = GLOBAL_PROXY[1] if GLOBAL_PROXY else None
-    gp_port = GLOBAL_PROXY[2] if GLOBAL_PROXY else None
-    gp_rdns = GLOBAL_PROXY[3] if GLOBAL_PROXY else True
-    gp_user = GLOBAL_PROXY[4] if GLOBAL_PROXY else None
-    gp_pass = GLOBAL_PROXY[5] if GLOBAL_PROXY else None
-
-    eff_type = p_type or gp_type
-    eff_host = p_host or gp_host
-    eff_port_str = p_port_str or (str(gp_port) if gp_port else None)
-
-    # RDNS: используем значение из TG{n}_PROXY_RDNS, если задано; иначе из GLOBAL_PROXY; иначе true
-    if p_rdns_raw is not None:
-        eff_rdns = str(p_rdns_raw).lower() in ("1", "true", "yes", "y", "on")
-    else:
-        eff_rdns = bool(gp_rdns)
-
-    # USER/PASS: пер-аккаунтные имеют приоритет; если не заданы — берём из GLOBAL_PROXY
-    eff_user = p_user if p_user is not None else gp_user
-    eff_pass = p_pass if p_pass is not None else gp_pass
-
-    # Сборка кортежа прокси, если после слияния есть тип/хост/порт
-    proxy = None
-    if eff_type and eff_host and eff_port_str:
-        try:
-            eff_port = int(eff_port_str)
-        except Exception:
-            eff_port = None
-        if eff_port:
-            proxy = (eff_type, eff_host, eff_port, eff_rdns, eff_user, eff_pass)
-
-    # Фолбэк: если после слияния прокси всё ещё не собран и есть GLOBAL_PROXY
-    if not proxy and GLOBAL_PROXY:
-        proxy = GLOBAL_PROXY
-
-    # Пропускаем пустые слоты без сессии/канала
-    if not (session or channel):
-        continue
-
-    accounts.append({
-        "index": n,
-        "api_id": TG_API_ID,
-        "api_hash": TG_API_HASH,
-        "session": session,
-        "channel": channel,
-        "proxy": proxy,
-    })
-
-# Требуем наличие прокси для каждого аккаунта. Без прокси работать запрещено.
-missing_proxy = [acc["index"] for acc in accounts if not acc.get("proxy")]
-if missing_proxy:
-    acc_list = ", ".join(f"TG{n}" for n in missing_proxy)
-    logging.error(
-        f"Для {acc_list} не задан прокси. "
-        f"Укажите TG{{n}}_PROXY_TYPE, TG{{n}}_PROXY_HOST, TG{{n}}_PROXY_PORT "
-        f"(при необходимости TG{{n}}_PROXY_USER, TG{{n}}_PROXY_PASS, TG{{n}}_PROXY_RDNS) — "
-        f"или задайте общий TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
-        f"(поддерживается фолбэк к TG16_PROXY_*)."
-    )
+if not CHANNELS_BY_INDEX:
+    print("ОШИБКА: Не задан ни один TG{n}_CHANNEL (например, TG1_CHANNEL).")
     exit(1)
 
+# Совместимость: список с индексами и каналами для логики флагов в таблице
+accounts = [{"index": i, "channel": ch} for i, ch in sorted(CHANNELS_BY_INDEX.items())]
+
+# Канал для ссылки на будущий пост (используется для префилла DM-ссылок)
+POST_LINK_CHANNEL_ID = int(os.environ.get("POST_LINK_CHANNEL_ID", "-1002940070930"))
+POST_LINK_CHANNEL_SLUG = os.environ.get("POST_LINK_CHANNEL_SLUG", "axjikner_handipum_erevan")
+
+# Проверка прокси — по переключателю REQUIRE_PROXY (по умолчанию обязателен)
+if REQUIRE_PROXY and not GLOBAL_PROXY:
+    logging.error(
+        "Прокси не задан. Укажите TG_PROXY_TYPE/TG_PROXY_HOST/TG_PROXY_PORT "
+        "(при необходимости TG_PROXY_USER/TG_PROXY_PASS/TG_PROXY_RDNS) — "
+        "или установите REQUIRE_PROXY=0, чтобы разрешить работу без прокси."
+    )
+    exit(1)
+elif not GLOBAL_PROXY:
+    logging.warning("REQUIRE_PROXY=0 — продолжаем без прокси.")
 
 # Интервал обновления (в секундах)
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
-
 
 # --- Validation tunables (speed up startup; override via env) ---
 VALIDATION_CONNECT_TIMEOUT = int(os.environ.get("VALIDATION_CONNECT_TIMEOUT", "30"))
@@ -357,45 +296,46 @@ except Exception as e:
     print(f"ПРЕДУПРЕЖДЕНИЕ: ошибка при определении флаговых столбцов: {e}")
     SENT_FLAG_INDICES = []
 
-def get_col_index(name: str):
+# Fallback: если нет числовых флагов в таблице, шлём во ВСЕ каналы
+if not SENT_FLAG_INDICES:
+    SENT_FLAG_INDICES = [acc["index"] for acc in accounts]
+
+def get_col_index(name: str, warn: bool = True):
     idx = HEADER_TO_COL.get(name)
-    if not idx:
+    if not idx and warn:
         print(f"ПРЕДУПРЕЖДЕНИЕ: не найден столбец '{name}' в заголовке таблицы.")
     return idx
 
 # Часовой пояс для расписания (Армения)
 tz = pytz.timezone("Asia/Yerevan")
 
-# Настройка клиентов Telegram (динамически)
+# Настройка одного клиента Telegram (общий для всех каналов)
 clients = []
-for i, acc in enumerate(accounts):
-    prx = acc.get("proxy")
-    session_or_name = StringSession(acc["session"]) if acc["session"] else f"tg{i+1}_session"
-    clients.append(
-        TelegramClient(
-            session_or_name,
-            acc["api_id"],
-            acc["api_hash"],
-            proxy=prx,
-            connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
-            request_retries=TELETHON_REQUEST_RETRIES,
-            connection_retries=TELETHON_CONNECTION_RETRIES,
-            retry_delay=TELETHON_RETRY_DELAY,
-            timeout=TELETHON_TIMEOUT,
-            flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
-        )
-    )
+common_proxy = GLOBAL_PROXY
+client = TelegramClient(
+    StringSession(TG_SESSION),
+    TG_API_ID,
+    TG_API_HASH,
+    proxy=common_proxy,
+    connection=tl_connection.ConnectionTcpAbridged,  # избегаем tcpfull
+    request_retries=TELETHON_REQUEST_RETRIES,
+    connection_retries=TELETHON_CONNECTION_RETRIES,
+    retry_delay=TELETHON_RETRY_DELAY,
+    timeout=TELETHON_TIMEOUT,
+    flood_sleep_threshold=TELETHON_FLOOD_SLEEP_THRESHOLD,
+)
+clients.append(client)
 
-# Удобные словари доступа по индексу аккаунта
+# Удобные словари доступа по индексу (все индексы используют один и тот же клиент)
 ACC_BY_INDEX = {acc["index"]: acc for acc in accounts}
-CLIENT_BY_INDEX = {acc["index"]: c for c, acc in zip(clients, accounts)}
+CLIENT_BY_INDEX = {i: client for i in ACC_BY_INDEX.keys()}
 
 # Runtime de-duplication guard: prevent repeating sends if Google Sheets flag update lags
 SENT_RUNTIME = set()  # stores tuples of (row_idx, acc_idx)
+SENDING_MARK = "SENDING"
 
 # --- 3. ПОЛЬЗОВАТЕЛЬСКИЕ EMOJI И ПАРСЕР + ТИПОГРАФИКА ---
 
-# Класс для обработки кастомных эмодзи в HTML
 class CustomHtml:
     @staticmethod
     def parse(text):
@@ -417,15 +357,10 @@ class CustomHtml:
 for _c in clients:
     _c.parse_mode = CustomHtml()
 
-# ID кастомных эмодзи
 emoji_ids = {
     1: 5467538555158943525,   # 💭 (left)
     2: 5467538555158943525,   # 💭 (right)
     3: 5217822164362739968,   # 👑
-    4: 5384225750213754731,   # ✅
-    5: 5386698955591549040,   # ✅
-    6: 5386434913887086602,   # ✅
-    7: 5386675715523505193,   # ✅
     8: 5325547803936572038,   # ✨ (left)
     9: 5325547803936572038,   # ✨ (right)
     10: 5409048419211682843,  # 💵 (left)
@@ -433,82 +368,73 @@ emoji_ids = {
     12: 5456140674028019486,  # ⚡️ (left)
     13: 5456140674028019486,  # ⚡️ (right)
     14: 5334998226636390258,  # 📱
-    15: 5334544901428229844,  # ℹ️ (info)
+    15: 5334544901428229844,  # ℹ️ (info),
+    16: 5330237710655306682,  # 📱 (Telegram custom)
 }
 
-# Unicode-заменители для отображения в коде
 emoji_placeholders = {
     1: "💭",  2: "💭",
     3: "👑",
-    4: "✅",  5: "✅",  6: "✅",  7: "✅",
     8: "✨",  9: "✨",
     10: "💵", 11: "💵",
     12: "⚡️", 13: "⚡️",
     14: "📱",
     15: "ℹ️",
+    16: "📱",
 }
 
-# Пробелы/переводы строк для стабильной типографики
+# Custom set of emojis for the "Фото" checks line
+FOTO_EMOJI_IDS = [
+    5370853949358218655,
+    5370674552869232639,
+    5372943137415111238,
+    5373338978780979795,
+    5372991528811635071,
+]
+
+# Типографика короны
 CROWN_OFFSET_ADJUST = int(os.environ.get("CROWN_OFFSET_ADJUST", "0"))
 CROWN_OFFSET_SCALE = float(os.environ.get("CROWN_OFFSET_SCALE", "1.25"))
-
-# Пробелы/переводы строк для стабильной типографики
 CROWN_THIN = "\u2009"  # тонкий пробел БЕЗ word-joiner — только для отступа короны
-NNBSP = "\u202F"   # узкий неразрывный пробел (для отступа короны)
-WORD_JOINER = "\u2060"  # WORD JOINER (запрещает перенос)
-THIN  = "\u2009" + WORD_JOINER  # тонкий + запрет переноса (комбо)
+NNBSP = "\u202F"       # узкий неразрывный пробел
+WORD_JOINER = "\u2060" # WORD JOINER
+THIN  = "\u2009" + WORD_JOINER
 CROWN_OFFSET_ADJUST = int(os.environ.get("CROWN_OFFSET_ADJUST", "0"))
 CROWN_OFFSET_SCALE = float(os.environ.get("CROWN_OFFSET_SCALE", "1.25"))
 
-# === Pixel-based width helpers (for precise crown centering) ===
-# Configurable font and sizing (works on render.com). If font is missing, we fall back safely.
-CROWN_FONT_PATH = os.environ.get("CROWN_FONT_PATH", "")  # e.g. ./fonts/DejaVuSans.ttf
+# Pixel-based width helpers
+CROWN_FONT_PATH = os.environ.get("CROWN_FONT_PATH", "")
 CROWN_FONT_SIZE = int(os.environ.get("CROWN_FONT_SIZE", "18"))
-# Scale factor for custom-emoji visual width relative to the font's 1em (tweak if crown looks off)
 CROWN_EM_WIDTH_SCALE = float(os.environ.get("CROWN_EM_WIDTH_SCALE", "1.0"))
-# Optional pixel adjustment (+/-) after centering math
 CROWN_OFFSET_PX_ADJUST = int(os.environ.get("CROWN_OFFSET_PX_ADJUST", "0"))
-
-# Device preset and fine-tune options for better mobile (iOS) rendering
 CROWN_PRESET = os.environ.get("CROWN_PRESET", "").lower()  # e.g. "ios"
 CROWN_FINE_TUNE = os.environ.get("CROWN_FINE_TUNE", "thin").lower()  # "thin" | "none"
 
-# Apply iOS defaults only if user didn't explicitly override via env
 if CROWN_PRESET == "ios":
     if "CROWN_EM_WIDTH_SCALE" not in os.environ:
-        CROWN_EM_WIDTH_SCALE = 0.96  # iOS tends to render slightly wider vs 1em heuristic
+        CROWN_EM_WIDTH_SCALE = 0.96
     if "CROWN_OFFSET_PX_ADJUST" not in os.environ:
-        CROWN_OFFSET_PX_ADJUST = 1   # nudge crown by ~1px to the right
+        CROWN_OFFSET_PX_ADJUST = 1
 _CROWN_FONT_SOURCE = None
 
-# Lazy-load a font that supports Cyrillic on typical Linux containers
 def _load_crown_font():
     global _CROWN_FONT_SOURCE
     if not _PIL_AVAILABLE:
         return None
-
-    # Base dir of this file for relative lookups like ./fonts/*.ttf
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except Exception:
         script_dir = os.getcwd()
-
-    # Try env-provided font first
     paths_to_try = [p for p in [CROWN_FONT_PATH] if p]
-
-    # Common Linux locations (present on many containers)
     paths_to_try += [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         "/usr/local/share/fonts/DejaVuSans.ttf",
-        # Typical relative locations in repo/container
         os.path.join(script_dir, "fonts", "DejaVuSans.ttf"),
         os.path.join(script_dir, "fonts", "dejavu", "DejaVuSans.ttf"),
         "./fonts/DejaVuSans.ttf",
         "fonts/DejaVuSans.ttf",
     ]
-
-    # Also scan ./fonts for any .ttf (accept the first that loads)
     for d in [os.path.join(script_dir, "fonts"), "./fonts", "fonts"]:
         try:
             if os.path.isdir(d):
@@ -519,7 +445,6 @@ def _load_crown_font():
                             paths_to_try.append(p)
         except Exception:
             pass
-
     for p in paths_to_try:
         try:
             if p and os.path.exists(p):
@@ -531,22 +456,16 @@ def _load_crown_font():
                     _CROWN_FONT_SOURCE = f"system:{p}"
                 return ImageFont.truetype(p, CROWN_FONT_SIZE)
         except Exception:
-            # Try next candidate
             pass
-
-    # Optional: one-time debug to help users
     try:
         print("[CROWN] Не удалось найти валидный TTF. Проверенные пути:")
         for p in paths_to_try:
             print("   -", p)
     except Exception:
         pass
-
-    # No acceptable TTF font found; do not fall back to Pillow's bitmap font
     return None
 
 _CROWN_FONT = _load_crown_font()
-
 
 if _PIL_AVAILABLE and _CROWN_FONT:
     if hasattr(_CROWN_FONT, "getlength"):
@@ -561,26 +480,21 @@ else:
 print(f"[CROWN] Preset={CROWN_PRESET or 'default'}, fine_tune={CROWN_FINE_TUNE}")
 
 _tag_re = re.compile(r"<[^>]+>")
-
 def _strip_tags(s: str) -> str:
     return _tag_re.sub("", str(s or "")).strip()
 
-# Approximate text width in pixels using the selected font; safe fallback if PIL/font is unavailable
 def _text_width_px(s: str) -> int:
     plain = str(s or "")
     if _PIL_AVAILABLE and _CROWN_FONT:
         try:
             if hasattr(_CROWN_FONT, "getlength"):
                 return int(round(_CROWN_FONT.getlength(plain)))
-            # Older Pillow fallback
             bbox = _CROWN_FONT.getbbox(plain)
             return max(0, int(bbox[2] - bbox[0]))
         except Exception:
             pass
-    # Heuristic fallback (~7 px per character)
     return int(round(len(plain) * 7))
 
-# Width of a space-like character (NNBSP by default) in pixels
 def _space_width_px(ch: str = NNBSP) -> int:
     if _PIL_AVAILABLE and _CROWN_FONT:
         try:
@@ -590,71 +504,196 @@ def _space_width_px(ch: str = NNBSP) -> int:
             return max(1, int(bbox[2] - bbox[0]))
         except Exception:
             pass
-    return 7  # heuristic fallback
+    return 7
 
 def _plain_len(s: str) -> int:
-    """Приблизительная 'ширина' имени: убираем теги и считаем символы."""
     txt = re.sub(r"<[^>]+>", "", str(s or "")).strip()
     return len(txt)
 
+# --- Helper: normalize multiline text (Google Sheets cell) ---
+def _normalize_multiline_text(s: str) -> str:
+    """Normalize line breaks coming from Google Sheets cells to avoid extra blank rows.
+    - Unify CRLF/CR to LF
+    - Trim trailing spaces per line
+    - Drop leading/trailing blank lines
+    """
+    t = str(s or "")
+    # Unify Windows/Mac line endings to Unix LF
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    # Trim trailing whitespace on each line to prevent accidental empty "visual" lines
+    t = "\n".join(line.rstrip() for line in t.split("\n"))
+    # Remove leading/trailing blank lines
+    t = t.strip("\n")
+    return t
+
+# --- Helpers: TG/WA contact normalization + next-post link -----------------
+def _tg_username_from_contact(val: str):
+    s = str(val or "").strip()
+    if not s:
+        return None
+    # Strip t.me/ and leading @, drop query params and trailing slashes
+    s = re.sub(r"^(?:https?://)?t\.me/", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^@+", "", s)
+    s = s.split("?")[0].strip().strip("/")
+    return s or None
+
+def _wa_number_from_contact(val: str):
+    """Extract a WhatsApp phone number suitable for wa.me links.
+    Rules:
+    - Prefer explicit wa.me/<digits> path.
+    - Else, support api.whatsapp.com/send?phone=<digits> or whatsapp://send?phone=...
+    - Else, find the first E.164-like token in free text (allowing spaces, dashes, parentheses),
+      strip separators and validate length (7..15). If longer, clip to 15 to avoid concatenation artifacts.
+    - Return None if nothing plausible is found.
+    """
+    s = str(val or "")
+    if not s.strip():
+        return None
+
+    # 1) wa.me/<digits>
+    m = re.search(r"(?:https?://)?wa\.me/\+?([0-9]{7,17})\b", s, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    # 2) ...?phone=<digits>
+    m = re.search(r"(?:[?&]|^)phone=([0-9\-\s()]+)", s, flags=re.IGNORECASE)
+    if m:
+        digits = re.sub(r"\D", "", m.group(1))
+        if 7 <= len(digits) <= 15:
+            return digits
+        if len(digits) > 15:
+            return digits[:15]
+
+    # 3) General free-text: pick the first E.164-like token (allow common separators)
+    m = re.search(r"(?<!\d)(\+?[1-9][0-9\-()\s]{6,20})(?!\d)", s)
+    if m:
+        digits = re.sub(r"\D", "", m.group(1))
+        if 7 <= len(digits) <= 15:
+            return digits
+        if len(digits) > 15:
+            return digits[:15]
+
+    # 4) Fallback: digits-only if reasonable length
+    digits = re.sub(r"\D", "", s)
+    if 7 <= len(digits) <= 15:
+        return digits
+    return None
+
+async def _get_next_post_link():
+    """Вернуть ссылку t.me/<slug-or-username>/<next_id> на СЛЕДУЮЩЕЕ сообщение.
+    Сначала пытаемся получить entity по username (POST_LINK_CHANNEL_SLUG), затем по ID.
+    Если ни один способ не доступен — вернём None (что приведёт к пропуску публикации).
+    """
+    base_client = clients[0]
+    try:
+        if not base_client.is_connected():
+            await base_client.connect()
+    except Exception:
+        logging.warning("Не удалось подключиться к Telegram клиенту для вычисления next_post_link")
+        return None
+
+    entity = None
+    # 1) Пытаемся по username/slug (надёжнее для публичных каналов)
+    if POST_LINK_CHANNEL_SLUG:
+        try:
+            entity = await base_client.get_entity(POST_LINK_CHANNEL_SLUG)
+        except Exception as e:
+            logging.warning(f"Не удалось получить entity по username '{POST_LINK_CHANNEL_SLUG}': {e}")
+
+    # 2) Фолбэк: пробуем по numeric ID (требует присутствия в диалогах/кеше)
+    if entity is None:
+        try:
+            entity = await base_client.get_entity(POST_LINK_CHANNEL_ID)
+        except Exception as e:
+            logging.warning(f"Не удалось получить entity по ID {POST_LINK_CHANNEL_ID}: {e}")
+            return None
+
+    try:
+        last = await base_client.get_messages(entity, limit=1)
+        last_id = last[0].id if last else 0
+        next_id = last_id + 1
+        uname = getattr(entity, "username", None) or POST_LINK_CHANNEL_SLUG
+        if uname:
+            return f"https://t.me/{uname}/{next_id}"
+        internal_id = getattr(entity, "id", None)
+        if internal_id:
+            return f"https://t.me/c/{internal_id}/{next_id}"
+    except Exception as e:
+        logging.warning(f"Не удалось получить номер последнего поста: {e}")
+        return None
+
+    return None
+
 def crown_over_name_lines(name: str, crown_html: str):
-    """
-    Возвращает две строки: (1) корона с автоотступом, (2) имя.
-    Смещение вычисляется по ширине текста в пикселях (через Pillow, если доступно).
-    На render.com это работает из коробки при наличии Pillow и шрифта; при их отсутствии
-    используется безопасный эвристический фолбэк.
-    Доступные настройки через ENV:
-      - CROWN_FONT_PATH: путь к .ttf (например, DejaVuSans.ttf)
-      - CROWN_FONT_SIZE: размер шрифта в px (по умолчанию 18)
-      - CROWN_EM_WIDTH_SCALE: множитель ширины эмодзи относительно 1em
-      - CROWN_OFFSET_PX_ADJUST: ручная пиксельная подстройка смещения
-    """
     name_plain = _strip_tags(name)
-
-    # Ширина имени в пикселях
     name_px = _text_width_px(name_plain)
-
-    # Оценка ширины "эмодзи-короны" в пикселях: берём 1em (ширину символа "M") и масштабируем
-    em_px = _space_width_px("M")  # 1em approximately
+    em_px = _space_width_px("M")
     crown_px = max(1, int(round(em_px * CROWN_EM_WIDTH_SCALE)))
-
-    # Центрируем корону по центру имени
     offset_px = max(0, int(round(name_px / 2 - crown_px / 2)))
-
-    # Ручная подстройка в пикселях (если нужно немного сдвинуть)
     offset_px += CROWN_OFFSET_PX_ADJUST
-
-    # Конвертируем пиксели в количество узких неразрывных пробелов
     nnbsp_px = _space_width_px(NNBSP)
-    # Coarse step by narrow NBSP
     n_spaces = max(0, int(offset_px // max(1, nnbsp_px)))
     leftover_px = max(0, int(offset_px - n_spaces * max(1, nnbsp_px)))
-
-    # Fine-tune with THIN spaces (smaller width) to better match iOS rendering
     thin_count = 0
     if CROWN_FINE_TUNE == "thin":
         thin_px = _space_width_px(CROWN_THIN)
         if thin_px > 0:
             thin_count = int(round(leftover_px / thin_px))
-            thin_count = max(0, min(thin_count, 8))  # cap to avoid overshoot
-
-    # Backward-compatible manual adjust in units of NNBSP
+            thin_count = max(0, min(thin_count, 8))
     n_spaces += max(0, CROWN_OFFSET_ADJUST)
-
     indent = (NNBSP * n_spaces) + (CROWN_THIN * thin_count)
     line1 = f"{indent}{crown_html}"
     line2 = f"<b><i>{name}</i></b>"
     return line1, line2
 
+
+# --- ДЕДУП ПО КАНАЛУ: сравнение текста и окно по времени ---
+
+def _norm_text_for_dedupe(s: str) -> str:
+    """Нормализуем текст для сравнения: убираем теги/невидимые символы и схлопываем пробелы."""
+    t = _strip_tags(s)
+    # унифицируем пробелы: NBSP, THIN и убираем WORD JOINER
+    t = t.replace('\u202F', ' ').replace('\u2009', ' ').replace('\u2060', '')
+    t = re.sub(r'\s+', ' ', t)
+    return t.strip().lower()
+
+async def _already_posted_recent(client, channel, message_html: str, window_sec: int = None) -> bool:
+    """Возвращает True, если в канале уже есть такой же по тексту пост за последние N секунд."""
+    try:
+        win = int(os.environ.get("DEDUP_WINDOW_SEC", "180")) if window_sec is None else int(window_sec)
+    except Exception:
+        win = 180
+    try:
+        recent = await client.get_messages(channel, limit=6)
+    except Exception:
+        return False
+    target = _norm_text_for_dedupe(message_html)
+    from datetime import datetime as _dt
+    now_utc = _dt.utcnow()
+    for m in recent:
+        msg_text = getattr(m, 'message', '') or ''
+        if _norm_text_for_dedupe(msg_text) == target:
+            md = getattr(m, 'date', None)
+            if md:
+                try:
+                    # Telethon отдаёт дату в UTC без tzinfo
+                    delta = abs((now_utc - md).total_seconds())
+                    if delta <= win:
+                        return True
+                except Exception:
+                    return True
+            else:
+                return True
+    return False
+
 # --- 4. ФУНКЦИЯ ОТПРАВКИ ПОСТА ---
 
-async def send_post(record, row_idx, pending_indices=None):
+async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count, success_indices)
     """Собирает, форматирует и отправляет пост на основе строки из таблицы."""
-    # Парсинг данных из записи
     status = record.get("Статус", "")
     name = record.get("Имя", "")
-    services = record.get("Услуги", "")
-    extra_services = record.get("Доп. услуги", "")
+    services = _normalize_multiline_text(record.get("Услуги", ""))
+    extra_services = _normalize_multiline_text(record.get("Доп. услуги", ""))
     age = record.get("Возраст", "")
     height = record.get("Рост", "")
     weight = record.get("Вес", "")
@@ -668,52 +707,89 @@ async def send_post(record, row_idx, pending_indices=None):
     nationality_raw = record.get("Национальность", "")
     nationality_flag = re.sub(r"\s+", "", str(nationality_raw or ""))
 
-    # Обязательное требование: без WhatsApp не публикуем
-    if not (whatsapp_link and str(whatsapp_link).strip()):
-        _notify_skip(row_idx, "Ячейка WhatsApp пуста. Публикация пропущена.")
-        return
+    # --- Сбор ссылки на будущий пост и формирование DM-ссылок ---
+    name_plain_for_dm = _strip_tags(name)
+    next_post_link = await _get_next_post_link()
+    if not next_post_link:
+        _notify_skip(row_idx, "Не удалось получить номер последнего поста в канале (entity недоступен). Публикация пропущена.")
+        return 0, []
+
+    prefill_text = (
+        f"Привет, {name_plain_for_dm}!\u2009💙\n"
+        f"Увидел твою анкету и хочу организовать встречу.\n"
+        f"Ссылка на пост: {next_post_link}"
+    )
+
+    tg_username = _tg_username_from_contact(telegram_link)
+    wa_number = _wa_number_from_contact(whatsapp_link)
+
+    telegram_dm_link = telegram_link
+    whatsapp_dm_link = whatsapp_link
+    try:
+        if tg_username:
+            telegram_dm_link = f"https://t.me/{tg_username}?text=" + urllib.parse.quote(prefill_text, safe="")
+    except Exception:
+        pass
+    try:
+        if wa_number:
+            whatsapp_dm_link = f"https://wa.me/{wa_number}?text=" + urllib.parse.quote(prefill_text, safe="")
+    except Exception:
+        pass
+
+    # Требуемое количество рабочих медиа (из столбца "Количество"): пусто -> 4
+    required_media_raw = record.get("Количество", "")
+    try:
+        required_media_count = int(str(required_media_raw).strip())
+        if required_media_count < 1:
+            required_media_count = 1
+    except Exception:
+        # Если значение пусто или некорректно — используем дефолт 4
+        required_media_count = 4
+    if str(required_media_raw).strip() == "":
+        required_media_count = 4
+
+    # Обязательное требование: нужен хотя бы один контакт (Telegram или WhatsApp)
+    has_tg = bool(telegram_link and str(telegram_link).strip())
+    has_wa = bool(whatsapp_link and str(whatsapp_link).strip())
+    if not (has_tg or has_wa):
+        _notify_skip(row_idx, "Нет контакта Telegram или WhatsApp. Публикация пропущена.")
+        return 0, []
 
     # --- сбор строк внутри блоков ---
     param_lines = []
-    if age and str(age).strip():    param_lines.append(f"Возраст - {age}")
-    if height and str(height).strip(): param_lines.append(f"Рост - {height}")
-    if weight and str(weight).strip(): param_lines.append(f"Вес - {weight}")
-    if bust and str(bust).strip():  param_lines.append(f"Грудь - {bust}")
+    if age and str(age).strip():    param_lines.append(f"Возраст: {age}")
+    if height and str(height).strip(): param_lines.append(f"Рост: {height}")
+    if weight and str(weight).strip(): param_lines.append(f"Вес: {weight}")
+    if bust and str(bust).strip():  param_lines.append(f"Грудь: {bust}")
 
-    # Блоки сообщения (между блоками — ровно одна пустая строка)
     blocks = []
-
     # 1) Статус
     blocks.append(
         f'<a href="emoji/{emoji_ids[1]}">{emoji_placeholders[1]}</a>{THIN}'
         f'<i>{status}</i>{THIN}'
         f'<a href="emoji/{emoji_ids[2]}">{emoji_placeholders[2]}</a>'
     )
-
     # 2) Коронка над именем (2 строки)
     crown_html = f'<a href="emoji/{emoji_ids[3]}">{emoji_placeholders[3]}</a>'
     line1, line2 = crown_over_name_lines(name, crown_html)
     if nationality_flag:
         line2 = f"{line2}{THIN}{nationality_flag}"
     blocks.append("\n".join([line1, line2]))
-
     # 3) Фото
-    foto_checks = "".join(f'<a href="emoji/{emoji_ids[i]}">{emoji_placeholders[i]}</a>' for i in range(4, 8))
+    foto_checks = "".join(f'<a href="emoji/{eid}">✅</a>' for eid in FOTO_EMOJI_IDS)
     blocks.append(f'<b>Фото{THIN}{foto_checks}</b>')
-
-    # 4) Услуги/Доп.услуги (если есть)
+    # 4) Услуги/Доп.услуги
     services_lines = []
     if services and str(services).strip():
         services_lines += ["Услуги:", f'<b><i>{services}</i></b>']
     if extra_services and str(extra_services).strip():
         if services_lines:
-            services_lines.append("")   # одна пустая строка внутри блока между разделами
+            services_lines.append("")  # один пустой ряд как визуальный разделитель
         services_lines += ["Доп. услуги:", f'<b><i>{extra_services}</i></b>']
     if services_lines:
         inner = "\n".join(services_lines)
         blocks.append(f"<blockquote>{inner}</blockquote>")
-
-    # 5) Параметры (если есть)
+    # 5) Параметры
     if param_lines:
         params_header = (
             f'<a href="emoji/{emoji_ids[8]}">{emoji_placeholders[8]}</a>{THIN}'
@@ -721,8 +797,7 @@ async def send_post(record, row_idx, pending_indices=None):
             f'<a href="emoji/{emoji_ids[9]}">{emoji_placeholders[9]}</a>'
         )
         blocks.append(params_header + "\n" + '<b><i>' + "\n".join(param_lines) + '</i></b>')
-
-    # 6) Цены (если есть)
+    # 6) Цены
     def _fmt_price(val):
         try:
             num = float(str(val).replace(' ', '').replace(',', '.'))
@@ -730,11 +805,10 @@ async def send_post(record, row_idx, pending_indices=None):
             return f"{format(amount, ',d').replace(',', '.')} AMD"
         except Exception:
             return f"{val} AMD"
-
     price_lines = []
-    if express_price and str(express_price).strip(): price_lines.append(f"Express - {_fmt_price(express_price)}")
-    if incall_price and str(incall_price).strip():  price_lines.append(f"Incall - {_fmt_price(incall_price)}")
-    if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall - {_fmt_price(outcall_price)}")
+    if express_price and str(express_price).strip(): price_lines.append(f"Express: {_fmt_price(express_price)}")
+    if incall_price and str(incall_price).strip():  price_lines.append(f"Incall: {_fmt_price(incall_price)}")
+    if outcall_price and str(outcall_price).strip(): price_lines.append(f"Outcall: {_fmt_price(outcall_price)}")
     if price_lines:
         price_header = (
             f'<a href="emoji/{emoji_ids[10]}">{emoji_placeholders[10]}</a>{THIN}'
@@ -742,8 +816,7 @@ async def send_post(record, row_idx, pending_indices=None):
             f'<a href="emoji/{emoji_ids[11]}">{emoji_placeholders[11]}</a>'
         )
         blocks.append(price_header + "\n" + '<b><i>' + "\n".join(price_lines) + '</i></b>')
-
-    # 6.5) Примечание (если есть)
+    # 6.5) Примечание
     if note_text and str(note_text).strip():
         note_header = (
             f'<a href="emoji/{emoji_ids[15]}">{emoji_placeholders[15]}</a>{THIN}'
@@ -751,8 +824,7 @@ async def send_post(record, row_idx, pending_indices=None):
             f'<a href="emoji/{emoji_ids[15]}">{emoji_placeholders[15]}</a>'
         )
         blocks.append(note_header + "\n" + '<b><i>' + str(note_text).strip() + '</i></b>')
-
-    # 7) Призыв + контакты (БЕЗ пустой строки между ними)
+    # 7) Призыв + контакты
     cta_and_contacts = [
         f'<a href="emoji/{emoji_ids[12]}">{emoji_placeholders[12]}</a>'
         f'{THIN}<b><i>Назначь встречу уже сегодня!</i></b>{THIN}'
@@ -760,17 +832,16 @@ async def send_post(record, row_idx, pending_indices=None):
     ]
     if telegram_link and str(telegram_link).strip():
         cta_and_contacts.append(
-            f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a>{THIN}'
-            f'<a href="{telegram_link}"><b>Связь в Telegram</b></a>'
+            f'<a href="emoji/{emoji_ids[16]}">{emoji_placeholders[16]}</a>{THIN}'
+            f'<a href="{telegram_dm_link}"><b>Связь в Telegram</b></a>'
         )
     if whatsapp_link and str(whatsapp_link).strip():
         cta_and_contacts.append(
             f'<a href="emoji/{emoji_ids[14]}">{emoji_placeholders[14]}</a>{THIN}'
-            f'<a href="{whatsapp_link}"><b>Связь в WhatsApp</b></a>'
+            f'<a href="{whatsapp_dm_link}"><b>Связь в WhatsApp</b></a>'
         )
     blocks.append("\n".join(cta_and_contacts))
 
-    # --- финальная склейка: ОДНА пустая строка между блоками ---
     message_html = "\n\n".join(blocks)
 
     # --- медиа ---
@@ -780,18 +851,14 @@ async def send_post(record, row_idx, pending_indices=None):
         url = record.get(header)
         if url and isinstance(url, str) and url.startswith("http"):
             media_urls.append(url)
-
     if not media_urls:
         _notify_skip(row_idx, "Нет ни одной ссылки на медиа. Публикация пропущена.")
-        return
-
-    # Если есть дубликаты ссылок — пропускаем публикацию
+        return 0, []
     if media_urls and len(set(media_urls)) != len(media_urls):
         _notify_skip(row_idx, "Обнаружены дубликаты ссылок на медиа. Публикация пропущена.")
-        return
+        return 0, []
 
     print(f"Найдено {len(media_urls)} URL-адресов для строки {row_idx}.")
-
     media_data = []
     if media_urls:
         for url_idx, url in enumerate(media_urls, start=1):
@@ -810,25 +877,26 @@ async def send_post(record, row_idx, pending_indices=None):
                         continue
                 media_data.append((file_data, file_name))
             except Exception as e:
-                if url_idx == 4:
-                    _notify_media_issue(row_idx, f"Не удалось загрузить 4-ю ссылку {url} — {e}. Продолжаю публикацию без неё.")
-                else:
-                    _notify_media_issue(row_idx, f"Не удалось загрузить медиа {url} — {e}. Пропускаю файл №{url_idx} и продолжаю.")
+                _notify_media_issue(row_idx, f"Не удалось загрузить медиа {url} — {e}. Пропускаю файл №{url_idx} и продолжаю.")
                 continue
 
-    # Если ничего не загрузилось — пропускаем публикацию; иначе продолжаем даже при частичном успехе
     if not media_data:
         _notify_skip(row_idx, "Не удалось загрузить ни одно медиа. Публикация пропущена.")
-        return
+        return 0, []
+    # Требование по минимальному количеству рабочих медиа
+    if len(media_data) < required_media_count:
+        _notify_skip(row_idx, f"Загружено {len(media_data)} медиа, требуется минимум {required_media_count}. Публикация пропущена.")
+        return 0, []
+
     if len(media_data) != len(media_urls):
-        tg_notify(f"ℹ️ Строка {row_idx}: загрузил {len(media_data)}/{len(media_urls)} медиа, продолжаю с успешными.")
+        logging.info(f"Строка {row_idx}: загрузил {len(media_data)}/{len(media_urls)} медиа, продолжаю с успешными.")
 
     # --- отправка ---
     if pending_indices is None:
+        # Без числовых столбцов: отправляем во все каналы, кроме тех, где столбец есть и там TRUE
         target_indexes = [
             i for i, acc in ACC_BY_INDEX.items()
-            if i in SENT_FLAG_INDICES and acc.get("channel")
-            and str(record.get(str(i), record.get(i, ""))).upper() != "TRUE"
+            if acc.get("channel") and str(record.get(str(i), record.get(i, ""))).upper() != "TRUE"
         ]
     else:
         target_indexes = [i for i in pending_indices if i in ACC_BY_INDEX and ACC_BY_INDEX[i].get("channel")]
@@ -838,7 +906,6 @@ async def send_post(record, row_idx, pending_indices=None):
     async def _send_to_one(client, acc):
         channel_str = acc.get("channel")
         acc_idx = acc.get("index")
-        # Skip if we already sent this row to this account in this process
         rt_key = (row_idx, acc_idx)
         if rt_key in SENT_RUNTIME:
             return acc_idx, channel_str, True, "runtime-dup-skip"
@@ -853,11 +920,26 @@ async def send_post(record, row_idx, pending_indices=None):
             return acc_idx, channel_str, False, f"connect: {e}"
 
         try:
-            channel = int(channel_str)
-        except (ValueError, TypeError):
-            channel = channel_str
+            try:
+                channel = int(channel_str)
+            except (ValueError, TypeError):
+                channel = channel_str
 
-        try:
+            # Preflight: если такой же пост уже есть в канале за недавнее время — пропускаем
+            try:
+                if await _already_posted_recent(client, channel, message_html):
+                    flag_name = str(acc_idx)
+                    col_idx = get_col_index(flag_name, warn=False)
+                    if col_idx:
+                        try:
+                            worksheet.update_cell(row_idx, col_idx, "TRUE")
+                        except Exception as e_upd:
+                            print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upd}")
+                    SENT_RUNTIME.add(rt_key)
+                    return acc_idx, channel_str, True, "pre-exist-skip"
+            except Exception as e_chk:
+                print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось выполнить проверку на дубли в TG{acc_idx}: {e_chk}")
+
             if media_data:
                 file_objs = []
                 for data, fname in media_data:
@@ -871,9 +953,9 @@ async def send_post(record, row_idx, pending_indices=None):
                     channel, message_html, parse_mode=CustomHtml()
                 )
 
-            # отметить флаг
+            # отметить флаг, если столбец существует
             flag_name = str(acc_idx)
-            col_idx = get_col_index(flag_name)
+            col_idx = get_col_index(flag_name, warn=False)
             if col_idx:
                 try:
                     worksheet.update_cell(row_idx, col_idx, "TRUE")
@@ -886,38 +968,17 @@ async def send_post(record, row_idx, pending_indices=None):
             logging.error(f"TG{acc_idx} лимит Telegram: {e}", exc_info=True)
             return acc_idx, channel_str, False, f"rate: {e}"
         except Exception as e:
-            logging.error(f"TG{acc_idx} ошибка отправки: {e}. Пробуем повтор...", exc_info=True)
+            logging.error(f"TG{acc_idx} ошибка отправки: {e}. Повтор не выполняем, чтобы избежать дублей", exc_info=True)
             try:
                 await client.disconnect()
             except Exception:
                 pass
             try:
                 await client.connect()
-                if media_data:
-                    file_objs = []
-                    for data, fname in media_data:
-                        bio = io.BytesIO(data); bio.name = fname; file_objs.append(bio)
-                    await client.send_file(
-                        channel, file_objs, caption=message_html,
-                        supports_streaming=True, parse_mode=CustomHtml()
-                    )
-                else:
-                    await client.send_message(
-                        channel, message_html, parse_mode=CustomHtml()
-                    )
-                # отметить флаг
-                flag_name = str(acc_idx)
-                col_idx = get_col_index(flag_name)
-                if col_idx:
-                    try:
-                        worksheet.update_cell(row_idx, col_idx, "TRUE")
-                    except Exception as e_upd:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить флаг {flag_name} (строка {row_idx}): {e_upд}")
-                SENT_RUNTIME.add(rt_key)
-                return acc_idx, channel_str, True, None
-            except Exception as e2:
-                logging.error(f"TG{acc_idx} повторная отправка не удалась: {e2}", exc_info=True)
-                return acc_idx, channel_str, False, f"retry: {e2}"
+            except Exception:
+                pass
+            # Сообщаем об ошибке без повторной отправки — повтор выполнит главный цикл, если потребуется
+            return acc_idx, channel_str, False, f"transient-no-retry: {e}"
 
     results = await asyncio.gather(
         *[_send_to_one(client, acc) for (client, acc) in clients_with_channels],
@@ -928,87 +989,60 @@ async def send_post(record, row_idx, pending_indices=None):
     fail = [(i, ch, err) for (i, ch, s, err) in results if not s]
     print(f"Строка {row_idx}: перс-отправки завершены. Успешно {ok}/{len(clients_with_channels)}. Неудачи: {fail}")
 
-    # DM summary if something failed
     if fail:
         tg_notify(f"❗️Строка {row_idx}: {ok}/{len(clients_with_channels)} успешно.\nПроблемы: {fail}")
 
+    # Если была хотя бы одна успешная отправка — отмечаем глобальный флаг "Отправлено"
+    if ok > 0:
+        for fname in ("Отправлено", "отправлено"):
+            col_idx = get_col_index(fname)
+            if col_idx:
+                try:
+                    worksheet.update_cell(row_idx, col_idx, "TRUE")
+                    break  # пометили любой из вариантов названия колонки
+                except Exception as e_upd:
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось обновить глобальный флаг '{fname}' (строка {row_idx}): {e_upd}")
+
+    success_indices = [i for (i, _, s, _) in results if s]
+    return ok, success_indices
 
 # --- 4.5. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА СЕССИЙ (без интерактива) ---
+
 async def validate_sessions_before_start():
     """
-    Параллельно проверяет, что у каждого аккаунта есть StringSession и что он авторизован.
-    Делает короткие таймауты на соединение/проверку, чтобы не "висеть" на недоступных прокси.
-    Если найдены проблемы, печатает подробности и завершает процесс без интерактива.
-    Настройки таймаутов и конкуренции регулируются переменными окружения:
-      - VALIDATION_CONNECT_TIMEOUT (сек)
-      - VALIDATION_AUTH_TIMEOUT (сек)
-      - VALIDATION_DISCONNECT_TIMEOUT (сек)
-      - VALIDATION_CONCURRENCY (кол-во одновременных проверок)
+    Проверяет, что общий StringSession авторизован. Короткие таймауты,
+    чтобы не висеть на недоступной сети/прокси.
     """
-    print(f"Проверка сессий Telegram... (всего аккаунтов: {len(ACC_BY_INDEX)})")
-
-    missing = []       # TG{n} без TG{n}_SESSION в окружении
-    unauthorized = []  # TG{n} сессия есть, но не авторизована (Telethon потребовал бы вход)
-    failed = []        # TG{n} проверка не удалась по исключению/таймауту
-
-    sem = asyncio.Semaphore(max(1, int(VALIDATION_CONCURRENCY)))
-
-    async def _check_one(acc_idx: int, acc: dict):
-        client = CLIENT_BY_INDEX[acc_idx]
-
-        if not acc.get("session"):
-            missing.append(acc_idx)
-            print(f"TG{acc_idx}: нет TG{acc_idx}_SESSION — пропуск")
-            return
-
-        try:
-            print(f"TG{acc_idx}: подключение через прокси...")
-            if not client.is_connected():
-                await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
-            authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
-            if not authed:
-                unauthorized.append(acc_idx)
-                print(f"TG{acc_idx}: сессия НЕ авторизована")
-            else:
-                print(f"TG{acc_idx}: OK")
-        except asyncio.TimeoutError:
-            failed.append((acc_idx, f"timeout ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)"))
-            print(f"TG{acc_idx}: timeout при проверке")
-        except Exception as e:
-            failed.append((acc_idx, str(e)))
-            print(f"TG{acc_idx}: ошибка проверки: {e}")
-        finally:
-            try:
-                await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
-            except Exception:
-                pass
-
-    async def _worker(acc_idx: int, acc: dict):
-        async with sem:
-            await _check_one(acc_idx, acc)
-
-    await asyncio.gather(*(_worker(i, acc) for i, acc in ACC_BY_INDEX.items()))
-
-    if missing or unauthorized or failed:
-        if missing:
-            logging.error("Не заданы TG{n}_SESSION для: " + ", ".join(f"TG{n}" for n in sorted(missing)))
-        if unauthorized:
-            logging.error("Недействительные/неавторизованные сессии для: " + ", ".join(f"TG{n}" for n in sorted(unauthorized)))
-        if failed:
-            for n, err in failed:
-                logging.error(f"TG{n} проверка сессии завершилась ошибкой: {err}")
-        logging.error("Завершение без интерактивного входа. Исправьте сессии/прокси и перезапустите.")
+    print("Проверка сессии Telegram... (один аккаунт)")
+    client = clients[0]
+    try:
+        if not client.is_connected():
+            await asyncio.wait_for(client.connect(), timeout=int(VALIDATION_CONNECT_TIMEOUT))
+        authed = await asyncio.wait_for(client.is_user_authorized(), timeout=int(VALIDATION_AUTH_TIMEOUT))
+        if not authed:
+            logging.error("Сессия не авторизована. Проверь TG_SESSION.")
+            exit(1)
+        print("TG: OK")
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout при проверке сессии ({VALIDATION_CONNECT_TIMEOUT + VALIDATION_AUTH_TIMEOUT}s)")
         exit(1)
+    except Exception as e:
+        logging.error(f"Ошибка проверки сессии: {e}")
+        exit(1)
+    finally:
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=int(VALIDATION_DISCONNECT_TIMEOUT))
+        except Exception:
+            pass
 
 # --- 5. ГЛАВНЫЙ ЦИКЛ ПРОГРАММЫ ---
 
 async def main():
     """Главная функция: подключается к клиентам и запускает бесконечный цикл проверки."""
     if not clients:
-        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте TG_API_ID/TG_API_HASH и TG{n}_SESSION/TG{n}_CHANNEL.")
+        print("ОШИБКА: Не настроен ни один Telegram клиент. Проверьте TG_API_ID/TG_API_HASH и TG_SESSION/TG{n}_CHANNEL.")
         return
 
-    # Предварительная проверка сессий: не даём Telethon спрашивать телефон
     await validate_sessions_before_start()
 
     print("Подключение Telegram клиентов...")
@@ -1017,19 +1051,24 @@ async def main():
         if isinstance(res, Exception):
             print(f"ПРЕДУПРЕЖДЕНИЕ: клиент #{idx} не запустился: {res}")
     print("Клиенты успешно подключены. Запуск основного цикла...")
-    tg_notify("🚀 telethon-poster запущен и следит за Google Sheets")
+    tg_notify("🚀 telethon-постер запущен и следит за Google Sheets")
 
     while True:
         try:
             alive = sum(1 for c in clients if c.is_connected())
-            # Proactive reconnect sweep to recover from "Server closed the connection" events
+            # Proactive reconnect sweep
+            seen = set()
             for acc_idx, client in CLIENT_BY_INDEX.items():
+                key = id(client)
+                if key in seen:
+                    continue
+                seen.add(key)
                 if not client.is_connected():
                     try:
                         await client.connect()
-                        print(f"TG{acc_idx} переподключен.")
+                        print("TG переподключен.")
                     except Exception as e:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: TG{acc_idx} не удалось переподключить: {e}")
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось переподключить общий клиент: {e}")
             print(f"Активных клиентов: {alive}/{len(clients)}")
             print(f"Проверка таблицы... {datetime.now(tz).strftime('%H:%M:%S')}")
             records = worksheet.get_all_records()
@@ -1039,16 +1078,27 @@ async def main():
                 if not str(record.get("Имя", "")).strip():
                     continue
 
-                active_idx = [acc["index"] for acc in accounts if acc.get("channel") and acc["index"] in SENT_FLAG_INDICES]
+                # Глобальный флаг "Отправлено": если TRUE — пропускаем запись
+                sent_flag = record.get("Отправлено", record.get("отправлено", ""))
+                if str(sent_flag).strip().upper() == "TRUE":
+                    continue
+
+                # ВАЖНО: берём ВСЕ настроенные каналы
+                active_idx = [acc["index"] for acc in accounts if acc.get("channel")]
                 if not active_idx:
                     continue
 
-                pending_idx = [
-                    i for i in active_idx
-                    if str(record.get(str(i), record.get(i, ""))).upper() != "TRUE"
-                ]
+                # Канал считается уже отправленным только если соответствующий столбец существует и там TRUE
+                pending_idx = []
+                for i in active_idx:
+                    cell_val = record.get(str(i), record.get(i, ""))
+                    val_upper = str(cell_val).strip().upper()
+                    if val_upper not in ("TRUE", SENDING_MARK):
+                        pending_idx.append(i)
+
                 if not pending_idx:
                     continue
+                print(f"Строка {idx}: каналы к отправке -> {pending_idx}")
 
                 time_str = record.get("Время")
                 if not time_str:
@@ -1060,7 +1110,27 @@ async def main():
 
                     if sched_time <= now:
                         print(f"Найдена запись для отправки в строке {idx}.")
-                        await send_post(record, idx, pending_indices=pending_idx)
+
+                        # Устанавливаем "SENDING" в канал-столбцах перед отправкой (мягкая блокировка от дублей)
+                        for i in pending_idx:
+                            col_idx = get_col_index(str(i), warn=False)
+                            if col_idx:
+                                try:
+                                    worksheet.update_cell(idx, col_idx, SENDING_MARK)
+                                except Exception as e_upd:
+                                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось выставить SENDING для столбца {i} (строка {idx}): {e_upd}")
+
+                        ok, success_idx = await send_post(record, idx, pending_indices=pending_idx)
+
+                        # Сбрасываем SENDING для неуспешных каналов, чтобы их можно было повторно обработать
+                        failed_idx = [i for i in pending_idx if i not in success_idx]
+                        for i in failed_idx:
+                            col_idx = get_col_index(str(i), warn=False)
+                            if col_idx:
+                                try:
+                                    worksheet.update_cell(idx, col_idx, "")
+                                except Exception as e_upd:
+                                    print(f"ПРЕДУПРЕЖДЕНИЕ: не удалось снять SENDING для столбца {i} (строка {idx}): {e_upd}")
 
                 except ValueError:
                     print(f"ПРЕДУПРЕЖДЕНИЕ: Неверный формат времени в строке {idx}: '{time_str}'. Ожидается 'ДД.ММ.ГГГГ ЧЧ:ММ:СС'.")
