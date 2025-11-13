@@ -738,20 +738,22 @@ async def send_post(record, row_idx, pending_indices=None):  # returns (ok_count
         _notify_skip(row_idx, "Не удалось получить номер последнего поста в канале (entity недоступен). Публикация пропущена.")
         return 0, []
 
-    # Определяем, нужно ли использовать английское приветствие
-    eng_greeting_raw = record.get("Английское Приветствие", "")
-    eng_greeting_flag = str(eng_greeting_raw).strip().upper()
-    use_english_greeting = eng_greeting_flag in ("TRUE", "1", "YES", "ДА", "+")
+    # Определяем, нужно ли использовать английское имя/приветствие
+    eng_name_raw = record.get("Английское Имя", "")
+    eng_name_clean = _strip_tags(eng_name_raw)
+    use_english_greeting = bool(eng_name_clean)
 
     if use_english_greeting:
+        name_for_dm = eng_name_clean
         prefill_text = (
-            f"Hi, {name_plain_for_dm}!\u2009💙\n"
+            f"Hi, {name_for_dm}!\u2009💙\n"
             f"I saw your profile and would like to arrange a meeting.\n"
             f"Post link: {next_post_link}"
         )
     else:
+        name_for_dm = name_plain_for_dm
         prefill_text = (
-            f"Привет, {name_plain_for_dm}!\u2009💙\n"
+            f"Привет, {name_for_dm}!\u2009💙\n"
             f"Увидел твою анкету и хочу организовать встречу.\n"
             f"Ссылка на пост: {next_post_link}"
         )
